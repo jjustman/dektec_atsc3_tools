@@ -38,7 +38,7 @@ DtAtsc3Pars
 #include <stdio.h>
 #include <sstream>
 
-#include "DTAPI.h"
+#include <DTAPI.h>
 #include "DtPlay.h"
 #include "DtSdiFileFmt.h"
 #include "DtOpt.h"
