@@ -2079,18 +2079,23 @@ void Player::LoopFile()
             if ( dr != DTAPI_OK )
                 throw Exc(c_ErrFailWrite, ::DtapiResult2Str(dr));
         }
+        
         if (TxStarted)
         {
             int  StatusFlags, Latched;
             dr = m_DtOutp.GetFlags(StatusFlags, Latched);
             if (dr != DTAPI_OK)
                 throw Exc(c_ErrFailGetFlags, ::DtapiResult2Str(dr));
+
             if ((Latched & DTAPI_TX_CPU_UFL) != 0)
                 throw Exc(c_ErrCpuUnderflow);
             if ((Latched & DTAPI_TX_DMA_UFL) != 0)
                 throw Exc(c_ErrDmaUnderflow);
-            if ((Latched & DTAPI_TX_FIFO_UFL) != 0)
-                throw Exc(c_ErrFifoUnderflow);
+            if ((Latched & DTAPI_TX_FIFO_UFL) != 0) {
+                //throw Exc(c_ErrFifoUnderflow);
+                printf("Error: FIFO underflow detected, sleeping 10s and continuing...");
+                Sleep(10 * 1000);
+            }
         }
 
 
