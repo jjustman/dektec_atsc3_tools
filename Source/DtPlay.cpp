@@ -1627,7 +1627,7 @@ void Player::InitOutput()
                 DTAPI_ATSC3_QAM256 256-QAM
                 DTAPI_ATSC3_QAM1024 1024-QAM
                 DTAPI_ATSC3_QAM4096 4096-QAM */
-            m_atsc3PlpPars.m_Modulation = DTAPI_ATSC3_QAM16;
+            m_atsc3PlpPars.m_Modulation = DTAPI_ATSC3_QAM256;
             m_atsc3PlpPars.m_CodeRate = DTAPI_ATSC3_COD_9_15;
 
             /*
@@ -1934,6 +1934,8 @@ void Player::LoopFile()
     int NumBytesRead, FifoLoad, FifoSize;
     int MinFifoLoad;
 
+    uint32_t num_packets_written = 0;
+
     // Init channel to hold mode
     dr = m_DtOutp.SetTxControl(DTAPI_TXCTRL_HOLD);
     if ( dr != DTAPI_OK )
@@ -2067,13 +2069,15 @@ void Player::LoopFile()
 
             NumBytesRead += 2;
 
-            printf("WriteMplpPacket: with m_pBuf: %p, and ALP packet len is: %d, ALP header is: 0x%02x 0x%02x 0x%02x 0x%02x\n", 
-                m_pBuf, NumBytesRead,
-                m_pBuf[0],
-                m_pBuf[1],
-                m_pBuf[2],
-                m_pBuf[3]
+            if ((num_packets_written++ % 100) == 0) {
+                printf("WriteMplpPacket: with m_pBuf: %p, and ALP packet len is: %d, ALP header is: 0x%02x 0x%02x 0x%02x 0x%02x\n",
+                    m_pBuf, NumBytesRead,
+                    m_pBuf[0],
+                    m_pBuf[1],
+                    m_pBuf[2],
+                    m_pBuf[3]
                 );
+            }
             dr = m_DtOutp.WriteMplpPacket(0, m_pBuf, NumBytesRead);
 
             if ( dr != DTAPI_OK )
