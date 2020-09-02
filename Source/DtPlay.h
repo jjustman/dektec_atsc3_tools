@@ -192,7 +192,7 @@ protected:
 
     DtDevice  m_DtDvc;              // Our device
     //DtOutpChannel  m_DtOutp;        // Our output channel
-    DtMplpOutpChannel m_DtOutp; //jjustman-2020-01-17
+    DtMplpOutpChannel m_DtOutp;         //jjustman-2020-01-17
     DtAtsc3Pars m_Atsc3Pars; 
 
     bool  m_Modulator;              // Current output is a modulator

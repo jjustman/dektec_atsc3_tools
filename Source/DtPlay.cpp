@@ -110,7 +110,7 @@ void Player::atsc3StltpBasebandAlpPacketCollectionCallback(atsc3_alp_packet_coll
     for (int i = 0; i < atsc3_alp_packet_collection->atsc3_alp_packet_v.count; i++) {
         atsc3_alp_packet_t* atsc3_alp_packet = atsc3_alp_packet_collection->atsc3_alp_packet_v.data[i];
         //jjustman-2020-09-02 todo: clone as we need to acquire ownership of these packets
-        atsc3_alp_packet_collection_queue.push(atsc3_alp_packet);
+        atsc3_alp_packet_collection_queue.push(atsc3_alp_packet_clone(atsc3_alp_packet));
     }
 
     atsc3_alp_packet_collection_queue_condition.notify_one();
@@ -445,60 +445,12 @@ void CommandLineParams::ParseCommandLine(int argc, char* argv[])
     list<wstring>  FreeArgs;
     DtOptItem::ParseOpt(CmdOptions, argc, argv, FreeArgs);
 
-   /* if (m_TxMode.IsSet())
-    {
-        if (m_TxMode.ToString() == L"SDI8B_525")
-            m_SdiSubValue = DTAPI_IOCONFIG_525I59_94;
-        else if (m_TxMode.ToString() == L"SDI8B_625")
-            m_SdiSubValue = DTAPI_IOCONFIG_625I50;
-        else if (m_TxMode.ToString() == L"DTSDI")
-            m_PlayDtSdiFile = true;
-    }
-    else if (m_ModType == DTAPI_MOD_ISDBT)
-        m_TxMode = DTAPI_TXMODE_204;
-    */
-    // ISDB-S3 uses PCAP input containing TLV data packets
-
     // Carrier defined?
     if (!m_CarrierFreq.IsSet())
-    {
-        //if (m_ModType == DTAPI_MOD_DVBS_QPSK)
-        //    m_CarrierFreq = 1915.0;     // L-Band
-        //else /* ISDBT, DVB-H/DVB-T, QAM */
-        m_CarrierFreq = 647.0;      // UHF-band
+    {        
+        m_CarrierFreq = 635.0;      // UHF-band
     }
 
-    //if (m_CodeRate.IsSet())
-    //{
-    //    if (m_ModType == DTAPI_MOD_DMBTH)
-    //        m_CodeRate.ParseEnum(DmbthCodeRate, L"mc");            
-    //    else
-    //        m_CodeRate.ParseEnum(DefaultCodeRate, L"mc");
-    //} else {
-    //    if (m_ModType == DTAPI_MOD_DMBTH)
-    //        m_CodeRate.MakeInt(DTAPI_MOD_DTMB_0_6);
-    //    else
-    //        m_CodeRate.MakeInt(DTAPI_MOD_3_4);
-    //}
-
-    //if (m_Constellation.IsSet())
-    //{
-    //    if (m_ModType == DTAPI_MOD_ATSC)
-    //        m_Constellation.ParseEnum(ConstellationAtsc, L"mC");
-    //    else if (m_ModType == DTAPI_MOD_DMBTH)
-    //        m_Constellation.ParseEnum(ConstallationDmbth, L"mC");
-    //    else
-    //        m_Constellation.ParseEnum(ConstallationDefault, L"mC");
-    //} else {
-    //    if ( m_ModType == DTAPI_MOD_ATSC )
-    //        m_Constellation.MakeInt(DTAPI_MOD_ATSC_VSB8);
-    //    else if ( m_ModType == DTAPI_MOD_DMBTH )
-    //        m_Constellation.MakeInt(DTAPI_MOD_DTMB_QAM64);
-    //    else if ( m_ModType == DTAPI_MOD_DVBT )
-    //        m_Constellation.MakeInt(DTAPI_MOD_DVBT_QAM64);
-    //    else
-    //        m_Constellation.MakeInt(-1); // don't care
-    //}
 
     if (m_Bandwidth.IsSet())
     {
@@ -513,29 +465,6 @@ void CommandLineParams::ParseCommandLine(int argc, char* argv[])
             m_Bandwidth.MakeInt(DTAPI_MOD_DTMB_8MHZ);
     }
 
-    if (m_Ipa.IsSet())
-    {
-        memset(&m_IpPars, 0, sizeof(m_IpPars));
-        m_IpPars.m_Port = 5678;
-        m_IpPars.m_Protocol = m_Ipp;
-        m_IpPars.m_NumTpPerIp = m_Ipn;
-        m_IpPars.m_TimeToLive = m_Ipt;
-
-        wstring  Address = m_Ipa.ToString();
-        size_t  Pos = Address.find(L":");
-        if (Pos != wstring::npos)
-        {
-            int  Port = wtoi(Address.c_str() + Pos + 1);
-            if (Port<0 || Port>0xFFFF)
-                throw Exc(c_CleInvalidArgument, "ipa");
-            m_IpPars.m_Port  = Port;
-            Address.resize(Pos);
-        }
-        DTAPI_RESULT dr = ::DtapiInitDtTsIpParsFromIpString(m_IpPars, Address.c_str(), NULL);
-        if (dr != DTAPI_OK)
-            throw Exc(c_CleInvalidArgument, "ipa");
-    }
-    
     //// Check for required parameters
     //if (FreeArgs.size()==0 && !m_ShowHelp)
     //    throw Exc(c_CleNoPlayFile);
@@ -1377,6 +1306,7 @@ void Player::InitOutput()
                 | DTAPI_MOD_DTMB_IL_2
                 | DTAPI_MOD_DTMB_USE_FRM_NO;*/
 
+        //jjustman-2020-09-02 - TODO - wire this up to our preamble packet
         m_Atsc3Pars.m_Bandwidth = DTAPI_ATSC3_6MHZ;
         m_Atsc3Pars.m_MinorVersion = 0;
         m_Atsc3Pars.m_EasWakeup = 0;
@@ -1404,168 +1334,173 @@ void Player::InitOutput()
         m_Atsc3Pars.m_FrameLengthMode = DTAPI_ATSC3_ALIGN_SYMBOL; // DTAPI_ATSC3_ALIGN_TIME 
         m_Atsc3Pars.m_FrameLength = 0;
 
-        //subframes config
-        DtAtsc3SubframePars mySubframeParams;
-        mySubframeParams.Init();
-
-        mySubframeParams.m_Miso = DTAPI_ATSC3_MISO_NONE;
-        mySubframeParams.m_MisoNumTx = 0;
-        mySubframeParams.m_MisoTxIndex = 0;
-
-        /*
-        DTAPI_ATSC3_FFT_8K 8K FFT DTAPI_ATSC3_FFT_16K 16K FFT DTAPI_ATSC3_FFT_32K 32K FFT */
-        mySubframeParams.m_FftSize = DTAPI_ATSC3_FFT_8K;
-
-        mySubframeParams.m_ReducedCarriers = 0;
-        mySubframeParams.m_GuardInterval = DTAPI_ATSC3_GI_5_1024;
-        mySubframeParams.m_PilotPattern = DTAPI_ATSC3_PP_3_4;
-
-        mySubframeParams.m_PilotBoost = 4;
-        mySubframeParams.m_SbsFirst = false;
-        mySubframeParams.m_SbsLast = true; //workaround for SL3010 - jjustman-2020-01-17
-
-        mySubframeParams.m_NumOfdmSymbols = 72;
-        mySubframeParams.m_FreqInterleaver = false;
+        
 
         //DtAtsc3PlpPars 
+        //jjustman - mocked for now
+        int num_plps = 2;
+        for (int i = 0; i < num_plps; i++) {
 
-        DtAtsc3PlpPars m_atsc3PlpPars;
-        m_atsc3PlpPars.Init();
-        m_atsc3PlpPars.m_Id = 0;
-        m_atsc3PlpPars.m_LlsFlag = true;
-        /*
-        DTAPI_ATSC3_LAYER_CORE Core layer DTAPI_ATSC3_LAYER_ENHANCED Enhanced layer */
-        m_atsc3PlpPars.m_Layer = DTAPI_ATSC3_LAYER_CORE;
-        /*
-        m_Modulation Modulation used by the PLP.  Value Meaning
-            DTAPI_ATSC3_QPSK QPSK
-            DTAPI_ATSC3_QAM16 16-QAM
-            DTAPI_ATSC3_QAM64 64-QAM
-            DTAPI_ATSC3_QAM256 256-QAM
-            DTAPI_ATSC3_QAM1024 1024-QAM
-            DTAPI_ATSC3_QAM4096 4096-QAM */
-        m_atsc3PlpPars.m_Modulation = DTAPI_ATSC3_QAM256;
-        m_atsc3PlpPars.m_CodeRate = DTAPI_ATSC3_COD_9_15;
+            //subframes config
+            DtAtsc3SubframePars mySubframeParams;
+            mySubframeParams.Init();
 
-        /*
-        DTAPI_ATSC3_LDPC_16K 16K LDPC
-        DTAPI_ATSC3_LDPC_64K 64K LDPC
-        */
-        m_atsc3PlpPars.m_FecCodeLength = DTAPI_ATSC3_LDPC_16K;
-        /*
-        DTAPI_ATSC3_OUTER_BCH BCH outer code
-        DTAPI_ATSC3_OUTER_CRC CRC outer code
-        DTAPI_ATSC3_OUTER_NONE No outer code
-        */
-        m_atsc3PlpPars.m_FecOuterCode = DTAPI_ATSC3_OUTER_BCH;
+            mySubframeParams.m_Miso = DTAPI_ATSC3_MISO_NONE;
+            mySubframeParams.m_MisoNumTx = 0;
+            mySubframeParams.m_MisoTxIndex = 0;
 
-        m_atsc3PlpPars.m_LdmInjectLevel = 0;
+            /*
+            DTAPI_ATSC3_FFT_8K 8K FFT DTAPI_ATSC3_FFT_16K 16K FFT DTAPI_ATSC3_FFT_32K 32K FFT */
+            mySubframeParams.m_FftSize = DTAPI_ATSC3_FFT_8K;
 
-        /*
-        DTAPI_ATSC3_PLPTYPE_NONDISP Non-dispersed PLP-type
-        DTAPI_ATSC3_PLPTYPE_DISP Dispersed PLP-type*/
-        m_atsc3PlpPars.m_PlpType = DTAPI_ATSC3_PLPTYPE_NONDISP;
+            mySubframeParams.m_ReducedCarriers = 0;
+            mySubframeParams.m_GuardInterval = DTAPI_ATSC3_GI_5_1024;
+            mySubframeParams.m_PilotPattern = DTAPI_ATSC3_PP_3_4;
 
-        /*
-        ignoring w/ DTAPI_ATSC3_PLPTYPE_NONDISP
-            int  m_NumSubslices;        // Number of subslices: 1...16384, if PlpType is dispersed
-            int  m_SubsliceInterval;    // Interval: 1.. 2^24-1, if PlpType is dispersed
+            mySubframeParams.m_PilotBoost = 4;
+            mySubframeParams.m_SbsFirst = (i == 0) ? true : false;
+            mySubframeParams.m_SbsLast = (i == num_plps-1) ? true : false; //workaround for SL3010 - jjustman-2020-01-17
 
-        */
+            mySubframeParams.m_NumOfdmSymbols = 72;
+            mySubframeParams.m_FreqInterleaver = false;
 
-        /*
-        DTAPI_ATSC3_TIMODE_NONE No time interleaving
-        DTAPI_ATSC3_TIMODE_CTI Convolutional time interleaver (CTI) mode
-        DTAPI_ATSC3_TIMODE_HTI Hybrid time interleaver (HTI) mode */
+            DtAtsc3PlpPars m_atsc3PlpPars;
+            m_atsc3PlpPars.Init();
+            m_atsc3PlpPars.m_Id = i; //plp_id
+            m_atsc3PlpPars.m_LlsFlag = (i == 0) ? true : false;
 
-        m_atsc3PlpPars.m_TiMode = DTAPI_ATSC3_TIMODE_NONE;
+            /*
+            DTAPI_ATSC3_LAYER_CORE Core layer DTAPI_ATSC3_LAYER_ENHANCED Enhanced layer */
+            m_atsc3PlpPars.m_Layer = DTAPI_ATSC3_LAYER_CORE;
+            /*
+            m_Modulation Modulation used by the PLP.  Value Meaning
+                DTAPI_ATSC3_QPSK QPSK
+                DTAPI_ATSC3_QAM16 16-QAM
+                DTAPI_ATSC3_QAM64 64-QAM
+                DTAPI_ATSC3_QAM256 256-QAM
+                DTAPI_ATSC3_QAM1024 1024-QAM
+                DTAPI_ATSC3_QAM4096 4096-QAM */
+            m_atsc3PlpPars.m_Modulation = (i == 0) ? DTAPI_ATSC3_QAM16 : DTAPI_ATSC3_QAM256;
+            m_atsc3PlpPars.m_CodeRate = DTAPI_ATSC3_COD_9_15;
 
-        /**
+            /*
+            DTAPI_ATSC3_LDPC_16K 16K LDPC
+            DTAPI_ATSC3_LDPC_64K 64K LDPC
+            */
+            m_atsc3PlpPars.m_FecCodeLength = DTAPI_ATSC3_LDPC_16K;
+            /*
+            DTAPI_ATSC3_OUTER_BCH BCH outer code
+            DTAPI_ATSC3_OUTER_CRC CRC outer code
+            DTAPI_ATSC3_OUTER_NONE No outer code
+            */
+            m_atsc3PlpPars.m_FecOuterCode = DTAPI_ATSC3_OUTER_BCH;
 
-        ignoring:
+            m_atsc3PlpPars.m_LdmInjectLevel = 0;
 
-            int  m_CtiDepth;            // Convolutional time interleaver depth,
-                                // see DTAPI_ATSC3_CTIDEPTH_xx, if TiMode=CTI
-        bool  m_TiExtInterleaving;  // Enable extended interleaving
+            /*
+            DTAPI_ATSC3_PLPTYPE_NONDISP Non-dispersed PLP-type
+            DTAPI_ATSC3_PLPTYPE_DISP Dispersed PLP-type*/
+            m_atsc3PlpPars.m_PlpType = DTAPI_ATSC3_PLPTYPE_NONDISP;
 
-        // HTI interleaving parameters (only applicable if TiMode=HTI)
-        bool  m_HtiInterSubframe;   // Enable inter-subframe interleaving
-        int  m_HtiNumTiBlocks;      // If inter-subframe interleaving is disabled: the
-                                    // number of TI blocks per interleaving frame.
-                                    // If inter-subframe interleaving is enabled:
-                                    // the number of subframes over which cells from
-                                    // one TI block are carried. Range: 1..16
-        int  m_HtiNumFecBlocksMax;  // The maximum number of FEC blocks per interleaving frame
-                                    // for the current PLP: 1..4096
-        bool  m_HtiCellInterleaver; // Enable the cell-interleaver
+            /*
+            ignoring w/ DTAPI_ATSC3_PLPTYPE_NONDISP
+                int  m_NumSubslices;        // Number of subslices: 1...16384, if PlpType is dispersed
+                int  m_SubsliceInterval;    // Interval: 1.. 2^24-1, if PlpType is dispersed
 
-        */
+            */
 
-        m_atsc3PlpPars.m_NumChannelBonded = 0;
+            /*
+            DTAPI_ATSC3_TIMODE_NONE No time interleaving
+            DTAPI_ATSC3_TIMODE_CTI Convolutional time interleaver (CTI) mode
+            DTAPI_ATSC3_TIMODE_HTI Hybrid time interleaver (HTI) mode */
 
-        /*
-        scheduling params, ignoring:
+            m_atsc3PlpPars.m_TiMode = DTAPI_ATSC3_TIMODE_NONE;
 
-            int  m_CoreLayerPlpId;      // If enhanced layer, the PLP ID of the corresponding
-                                // core layer. Currently the enhanced layer is scheduled
-                                // with the same number of cells as the core layer.
-            int  m_HtiNumFecBlocks;     // Used when TiMode = HTI and core layer.
-                                // The number of FEC blocks per subframe,
-                                // range: 1..m_HtiNumFecBlocksMax
-        */
+            /**
+                int  m_CtiDepth;            // Convolutional time interleaver depth,
+                                    // see DTAPI_ATSC3_CTIDEPTH_xx, if TiMode=CTI
+                bool  m_TiExtInterleaving;  // Enable extended interleaving
 
-        /*
-            // For core layer: used when TiMode = NONE or CTI.
-                                // The number of cells per subframe, -1 means to use the
-                                // full subframe.
-                                // For enhanced layer: -1 means the complete size of the
-                                // first core PLP (identified by m_CoreLayerPlpId).
-                                // Otherwise it is the number of cells of the
-                                // enhanced layer PLP.*/
-        m_atsc3PlpPars.m_PlpSize = -1;
+                // HTI interleaving parameters (only applicable if TiMode=HTI)
+                bool  m_HtiInterSubframe;   // Enable inter-subframe interleaving
+                int  m_HtiNumTiBlocks;      // If inter-subframe interleaving is disabled: the
+                                            // number of TI blocks per interleaving frame.
+                                            // If inter-subframe interleaving is enabled:
+                                            // the number of subframes over which cells from
+                                            // one TI block are carried. Range: 1..16
+                int  m_HtiNumFecBlocksMax;  // The maximum number of FEC blocks per interleaving frame
+                                            // for the current PLP: 1..4096
+                bool  m_HtiCellInterleaver; // Enable the cell-interleaver
+
+            */
+
+            m_atsc3PlpPars.m_NumChannelBonded = 0;
+
+            /*
+
+                int  m_CoreLayerPlpId;      // If enhanced layer, the PLP ID of the corresponding
+                                              // core layer. Currently the enhanced layer is scheduled
+                                               // with the same number of cells as the core layer.
+                int  m_HtiNumFecBlocks;     // Used when TiMode = HTI and core layer.
+                                             // The number of FEC blocks per subframe,
+                                             // range: 1..m_HtiNumFecBlocksMax
+            */
+
+            /*
+                // For core layer: used when TiMode = NONE or CTI.
+                                    // The number of cells per subframe, -1 means to use the
+                                    // full subframe.
+                                    // For enhanced layer: -1 means the complete size of the
+                                    // first core PLP (identified by m_CoreLayerPlpId).
+                                    // Otherwise it is the number of cells of the
+                                    // enhanced layer PLP.*/
+            m_atsc3PlpPars.m_PlpSize = -1;
 
 
-        /*
-            // If -1, plp_start is automatically set by allocating
-                                // PLPs by increasing PLP index assuming each PLP uses
-                                // m_PlpSize cells (plp_type=non-dispersed) or
-                                // ceil(m_PlpSize/m_NumSubslices) cells
-                                // (plp_type=dispersed).
-                                // For complex FDM allocations the previous automatic
-                                // algorithm is not sufficient so m_PlpStart must be set
-                                // manually.
-                                // For  enhanced layer: It is defined as the starting
-                                // cell counting from the start of core PLP
-                                // (identified by m_CoreLayerPlpId).   */
+            /*
+                // If -1, plp_start is automatically set by allocating
+                                    // PLPs by increasing PLP index assuming each PLP uses
+                                    // m_PlpSize cells (plp_type=non-dispersed) or
+                                    // ceil(m_PlpSize/m_NumSubslices) cells
+                                    // (plp_type=dispersed).
+                                    // For complex FDM allocations the previous automatic
+                                    // algorithm is not sufficient so m_PlpStart must be set
+                                    // manually.
+                                    // For  enhanced layer: It is defined as the starting
+                                    // cell counting from the start of core PLP
+                                    // (identified by m_CoreLayerPlpId).   */
 
-        m_atsc3PlpPars.m_PlpStart = -1;
+            m_atsc3PlpPars.m_PlpStart = -1;
 
+            mySubframeParams.m_Plps.push_back(m_atsc3PlpPars);
 
-        mySubframeParams.m_Plps.push_back(m_atsc3PlpPars);
+            DtPlpInpPars myPlpInpPars;
+            myPlpInpPars.Init();
+            myPlpInpPars.m_DataType = myPlpInpPars.ALP;
 
-        m_Atsc3Pars.m_Subframes.push_back(mySubframeParams);
+            /**
+            m_FifoIdx The index of the FIFO used by the associated PLP.
+
+            PLPs in the same group that have “Big-TS” splitting enabled can share the same input FIFO.
+
+            The index will be used in several methods that operate on a specific FIFO (e.g. DtMplpOutpChannel::WriteMplpPacket()).
+
+            The default value of m_FifoIdx is equal to the index in the array of DtPlpInpPars structs. For writing data to the nth PLP
+            (which is specified at index n in the array of DtPlpInpPars) you have to use FIFO index n.
+            The valid range of m_FifoIdx is 0 … 255.
+            */
+
+            myPlpInpPars.m_FifoIdx = i;
+            m_Atsc3Pars.m_PlpInputs[i] = myPlpInpPars;
+
+            m_Atsc3Pars.m_Subframes.push_back(mySubframeParams);
+
+        }
+
 
         //plp config for DT I/O
 
-        m_Atsc3Pars.m_NumPlpInputs = 1;
-        DtPlpInpPars myPlpInpPars;
-        myPlpInpPars.Init();
-        myPlpInpPars.m_DataType = myPlpInpPars.ALP;
-
-        /**
-        m_FifoIdx The index of the FIFO used by the associated PLP.
-
-        PLPs in the same group that have “Big-TS” splitting enabled can share the same input FIFO.
-
-        The index will be used in several methods that operate on a specific FIFO (e.g. DtMplpOutpChannel::WriteMplpPacket()).
-
-        The default value of m_FifoIdx is equal to the index in the array of DtPlpInpPars structs. For writing data to the nth PLP
-        (which is specified at index n in the array of DtPlpInpPars) you have to use FIFO index n.
-        The valid range of m_FifoIdx is 0 … 255.
-        */
-
-        myPlpInpPars.m_FifoIdx = 0;
-        m_Atsc3Pars.m_PlpInputs[0] = myPlpInpPars;
+        m_Atsc3Pars.m_NumPlpInputs = num_plps;
 
         DTAPI_RESULT atsc3ParsValid = m_Atsc3Pars.CheckValidity();
 
@@ -1593,7 +1528,6 @@ void Player::InitOutput()
         if ( dr != DTAPI_OK )
             throw Exc( c_ErrFailedToSetOutputLevel, ::DtapiResult2Str(dr) );
     }
-
 
     // Set spectral inversion
     if (m_Modulator && m_CmdLineParams.m_SpecInvers.ToBool())
@@ -1822,22 +1756,30 @@ void Player::processDemuxedALPQueue()
         //printf("PcapSTLTPVirtualPHY::PcapConsumerThreadRun - pushing %d packets", to_dispatch_queue.size());
         while (to_dispatch_queue.size()) {
             atsc3_alp_packet_t* atsc3_alp_packet_to_process = to_dispatch_queue.front();
+            block_Rewind(atsc3_alp_packet_to_process->alp_payload);
+            uint16_t packet_size = block_Remaining_size(atsc3_alp_packet_to_process->alp_payload);
+            uint16_t alp_packet_size = 2 + packet_size;
 
-            m_pBuf[0] = 0x00 | ((NumBytesRead >> 8) & 0x7);
-            m_pBuf[1] = NumBytesRead & 0xFF;
+            m_pBuf[0] = 0x00 | ((packet_size >> 8) & 0x7);
+            m_pBuf[1] = packet_size & 0xFF;
 
-            NumBytesRead += 2;
+            memcpy(&m_pBuf[2], block_Get(atsc3_alp_packet_to_process->alp_payload), packet_size);
 
             if ((num_packets_written++ % 100) == 0) {
-                printf("WriteMplpPacket: with m_pBuf: %p, and ALP packet len is: %d, ALP header is: 0x%02x 0x%02x 0x%02x 0x%02x\n",
-                    m_pBuf, NumBytesRead,
+                printf("WriteMplpPacket: packet_num: %d, PLP: %d, with m_pBuf: %p, and ALP packet size is: %d, ALP header is: 0x%02x 0x%02x 0x%02x 0x%02x, bootsrap_timing_ref seconds: 0x%06x, a_milli: 0x%04x \n",
+                    num_packets_written,
+                    atsc3_alp_packet_to_process->plp_num,
+                    m_pBuf,
+                    alp_packet_size,
                     m_pBuf[0],
                     m_pBuf[1],
                     m_pBuf[2],
-                    m_pBuf[3]
-                );
+                    m_pBuf[3],
+                    atsc3_alp_packet_to_process->bootstrap_timing_data_timestamp_short_reference.seconds_pre,
+                    atsc3_alp_packet_to_process->bootstrap_timing_data_timestamp_short_reference.a_milliseconds_pre);
             }
-            dr = m_DtOutp.WriteMplpPacket(0, m_pBuf, NumBytesRead);
+
+            dr = m_DtOutp.WriteMplpPacket(atsc3_alp_packet_to_process->plp_num, m_pBuf, alp_packet_size);
 
             if (dr != DTAPI_OK)
                 throw Exc(c_ErrFailWrite, ::DtapiResult2Str(dr));
@@ -1977,6 +1919,10 @@ int Player::Play(int argc, char* argv[])
             processDemuxedALPQueueThreadShutdown = true;
        });
 
+      //spin
+        while (true) {
+            usleep(100000);
+        }
     }
     catch( Exc e )
     {
