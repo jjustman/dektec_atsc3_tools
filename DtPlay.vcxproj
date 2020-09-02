@@ -92,6 +92,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LinkIncremental>true</LinkIncremental>
+    <IncludePath>$(ProjectDir)..\libatsc3\src\;../;../../srt;../../srt/common;C:\pthread-win32\cinegy.pthreads-win64.2.9.1.17\sources;$(ProjectDir)..\libatsc3\WpdPack\Include;$(ProjectDir)..\libatsc3\WpdPack\Include\pcap;../../vcpkg/packages/zlib_x64-windows/include;C:\Program Files\OpenSSL-Win64\include;../../pcre2-win-build/include;$(IncludePath)</IncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <LinkIncremental>false</LinkIncremental>
@@ -122,8 +123,8 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>WINBUILD;WIN64;_DEBUG;_CONSOLE;%(PreprocessorDefinitions);_CRT_SECURE_NO_WARNINGS</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>.\Import;$(DtapiIncludePath);C:\Program Files (x86)\DekTec\SDKs\WinSDK\DTAPI\Include</AdditionalIncludeDirectories>
-      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <AdditionalIncludeDirectories>.\Import;$(DtapiIncludePath);C:\Program Files (x86)\DekTec\SDKs\WinSDK\DTAPI\Include;$(IncludePath);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -181,6 +182,11 @@
   <ItemGroup>
     <ClCompile Include="Import\DtOpt.cpp" />
     <ClCompile Include="Source\DtPlay.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\libatsc3\src\libatsc3.vcxproj">
+      <Project>{2907f29f-4c5f-4b7e-9271-5ea623cfcddf}</Project>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
