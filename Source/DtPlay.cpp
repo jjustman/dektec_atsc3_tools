@@ -113,7 +113,9 @@ void Player::atsc3StltpBasebandAlpPacketCollectionCallback(atsc3_alp_packet_coll
         atsc3_alp_packet_collection_queue.push(atsc3_alp_packet_clone(atsc3_alp_packet));
     }
 
-    atsc3_alp_packet_collection_queue_condition.notify_one();
+    if (atsc3_alp_packet_collection_queue.size() > 1024) {
+        atsc3_alp_packet_collection_queue_condition.notify_one();
+    }
 }
 
 //.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.- DtPlay Version -.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.
@@ -1316,8 +1318,8 @@ void Player::InitOutput()
         m_Atsc3Pars.m_PreambleFftSize = DTAPI_ATSC3_FFT_8K;
 
 
-        m_Atsc3Pars.m_PreambleGuardInterval = DTAPI_ATSC3_GI_5_1024;
-        m_Atsc3Pars.m_PreamblePilotDx = DTAPI_ATSC3_PP_DX_3;
+        m_Atsc3Pars.m_PreambleGuardInterval = DTAPI_ATSC3_GI_6_1536;
+        m_Atsc3Pars.m_PreamblePilotDx = DTAPI_ATSC3_PP_DX_4;
         m_Atsc3Pars.m_PreambleReducedCarriers = 0;
         m_Atsc3Pars.m_L1BasicFecMode = 1;
         m_Atsc3Pars.m_L1DetailFecMode = 1;
@@ -1351,18 +1353,18 @@ void Player::InitOutput()
 
             /*
             DTAPI_ATSC3_FFT_8K 8K FFT DTAPI_ATSC3_FFT_16K 16K FFT DTAPI_ATSC3_FFT_32K 32K FFT */
-            mySubframeParams.m_FftSize = DTAPI_ATSC3_FFT_8K;
+            mySubframeParams.m_FftSize = (i == 0) ? DTAPI_ATSC3_FFT_8K : DTAPI_ATSC3_FFT_16K;
 
             mySubframeParams.m_ReducedCarriers = 0;
-            mySubframeParams.m_GuardInterval = DTAPI_ATSC3_GI_5_1024;
-            mySubframeParams.m_PilotPattern = DTAPI_ATSC3_PP_3_4;
+            mySubframeParams.m_GuardInterval = (i == 0) ? DTAPI_ATSC3_GI_6_1536 : DTAPI_ATSC3_GI_6_1536;
+            mySubframeParams.m_PilotPattern = (i == 0) ? DTAPI_ATSC3_PP_4_2 : DTAPI_ATSC3_PP_4_4;
 
-            mySubframeParams.m_PilotBoost = 4;
-            mySubframeParams.m_SbsFirst = (i == 0) ? true : false;
-            mySubframeParams.m_SbsLast = (i == num_plps-1) ? true : false; //workaround for SL3010 - jjustman-2020-01-17
+            mySubframeParams.m_PilotBoost = 0;
+            mySubframeParams.m_SbsFirst = true;
+            mySubframeParams.m_SbsLast = true;
 
-            mySubframeParams.m_NumOfdmSymbols = 72;
-            mySubframeParams.m_FreqInterleaver = false;
+            mySubframeParams.m_NumOfdmSymbols = (i == 0) ? 43 : 71;
+            mySubframeParams.m_FreqInterleaver = true;
 
             DtAtsc3PlpPars m_atsc3PlpPars;
             m_atsc3PlpPars.Init();
@@ -1381,13 +1383,13 @@ void Player::InitOutput()
                 DTAPI_ATSC3_QAM1024 1024-QAM
                 DTAPI_ATSC3_QAM4096 4096-QAM */
             m_atsc3PlpPars.m_Modulation = (i == 0) ? DTAPI_ATSC3_QAM16 : DTAPI_ATSC3_QAM256;
-            m_atsc3PlpPars.m_CodeRate = DTAPI_ATSC3_COD_9_15;
+            m_atsc3PlpPars.m_CodeRate = (i == 0) ? DTAPI_ATSC3_COD_9_15 : DTAPI_ATSC3_COD_11_15;
 
             /*
             DTAPI_ATSC3_LDPC_16K 16K LDPC
             DTAPI_ATSC3_LDPC_64K 64K LDPC
             */
-            m_atsc3PlpPars.m_FecCodeLength = DTAPI_ATSC3_LDPC_16K;
+            m_atsc3PlpPars.m_FecCodeLength = DTAPI_ATSC3_LDPC_64K; //DTAPI_ATSC3_LDPC_16K;
             /*
             DTAPI_ATSC3_OUTER_BCH BCH outer code
             DTAPI_ATSC3_OUTER_CRC CRC outer code
@@ -1604,6 +1606,24 @@ void Player::processPreambleSettings() {
 
     while (this->processPreambleSettingsThreadShouldRun) {
         //wait condition
+         //critical section
+        {
+            unique_lock<mutex> condition_lock(atsc3_stltp_preamble_packet_queue_mutex);
+            atsc3_stltp_preamble_packet_queue_condition.wait(condition_lock);
+
+            while (atsc3_stltp_preamble_packet_queue.size()) {
+                //run with the acquired lock, less hassle and low PPS, do not free as that is the depacketizers ownership of preamble packet
+                atsc3_stltp_preamble_packet_tv* atsc3_stltp_preamble_packet_tv = atsc3_stltp_preamble_packet_queue.front();
+                for (int i = 0; i < atsc3_stltp_preamble_packet_tv->count; i++) {
+                    atsc3_stltp_preamble_packet_t* atsc3_stltp_preamble_packet = atsc3_stltp_preamble_packet_tv->data[i];
+                    atsc3_preamble_packet_t* atsc3_preamble_packet = atsc3_stltp_preamble_packet->preamble_packet;
+
+                    atsc3_preamble_packet_dump(atsc3_preamble_packet);
+                }
+                atsc3_stltp_preamble_packet_queue.pop();
+            }
+            condition_lock.unlock();
+        }
     }
 }
 
@@ -1611,6 +1631,10 @@ void Player::processDemuxedALPQueue()
 {
     queue<atsc3_alp_packet_t*> to_dispatch_queue; //perform a shallow copy so we can exit critical section asap
     queue<atsc3_alp_packet_t*> to_purge_queue; //perform a shallow copy so we can exit critical section asap
+
+    int total_alp_packet_count = 0;
+    int last_plp = -1;
+    block_t* bbp_block = block_Alloc(64000);
 
     bool EoF(false), TxStarted(false);
     DTAPI_RESULT dr;
@@ -1635,17 +1659,17 @@ void Player::processDemuxedALPQueue()
     while (this->processDemuxedALPQueueThreadShouldRun)
     {
         // Check for free space in hardware FIFO.
-        dr = m_DtOutp.GetFifoLoad(FifoLoad);
-        if ( (FifoLoad + c_BufSize)>=FifoSize )
-        {
-            // Sleep to wait for some free space
-#ifdef WINBUILD
-            ::Sleep(2);
-#else
-            usleep(2000);
-#endif 
-            continue;
-        }
+//        dr = m_DtOutp.GetFifoLoad(FifoLoad);
+//        if ( (FifoLoad + c_BufSize)>=FifoSize )
+//        {
+//            // Sleep to wait for some free space
+//#ifdef WINBUILD
+//            ::Sleep(2);
+//#else
+//            usleep(2000);
+//#endif 
+//            continue;
+//        }
 
       
         ///**
@@ -1753,37 +1777,61 @@ void Player::processDemuxedALPQueue()
             condition_lock.unlock();
         }
 
+        /*        jjustman-2020-09-02 - TODO: chunk this up into bootstrap_ref emission time and PLP*/
+
+
         //printf("PcapSTLTPVirtualPHY::PcapConsumerThreadRun - pushing %d packets", to_dispatch_queue.size());
         while (to_dispatch_queue.size()) {
             atsc3_alp_packet_t* atsc3_alp_packet_to_process = to_dispatch_queue.front();
-            block_Rewind(atsc3_alp_packet_to_process->alp_payload);
-            uint16_t packet_size = block_Remaining_size(atsc3_alp_packet_to_process->alp_payload);
-            uint16_t alp_packet_size = 2 + packet_size;
 
-            m_pBuf[0] = 0x00 | ((packet_size >> 8) & 0x7);
-            m_pBuf[1] = packet_size & 0xFF;
+            if (atsc3_alp_packet_to_process->alp_packet_header.packet_type == 0x00) {
 
-            memcpy(&m_pBuf[2], block_Get(atsc3_alp_packet_to_process->alp_payload), packet_size);
+                if (last_plp != -1) { // && last_plp != atsc3_alp_packet_to_process->plp_num) {
+                    if (bbp_block->i_pos) {
+                        //int block_size = ((bbp_block->i_pos / 4) * 4)+4;
+                        int block_len = bbp_block->i_pos; // +(4 - bbp_block->i_pos % 4);
+                        if (total_alp_packet_count % 100 == 0) {
+                            int free = 0;
+                            m_DtOutp.GetMplpFifoFree(last_plp, free);
+                            printf("\n\n\Before: m_DtOutp.WriteMplp: last_plp: %d, block size: %d, fifo free: %d\n\n", last_plp, block_len, free);
+                        }
+                        dr = m_DtOutp.WriteMplpPacket(last_plp, (char*)bbp_block->p_buffer, block_len, DtFractionInt(1, 5000));
+                        //dr = m_DtOutp.WriteMplp(last_plp, (char*)bbp_block->p_buffer, block_len);
 
-            if ((num_packets_written++ % 100) == 0) {
-                printf("WriteMplpPacket: packet_num: %d, PLP: %d, with m_pBuf: %p, and ALP packet size is: %d, ALP header is: 0x%02x 0x%02x 0x%02x 0x%02x, bootsrap_timing_ref seconds: 0x%06x, a_milli: 0x%04x \n",
-                    num_packets_written,
-                    atsc3_alp_packet_to_process->plp_num,
-                    m_pBuf,
-                    alp_packet_size,
-                    m_pBuf[0],
-                    m_pBuf[1],
-                    m_pBuf[2],
-                    m_pBuf[3],
-                    atsc3_alp_packet_to_process->bootstrap_timing_data_timestamp_short_reference.seconds_pre,
-                    atsc3_alp_packet_to_process->bootstrap_timing_data_timestamp_short_reference.a_milliseconds_pre);
+                        total_alp_packet_count++;
+                        block_Rewind(bbp_block);
+
+                        if (dr != DTAPI_OK)
+                            throw Exc(c_ErrFailWrite, ::DtapiResult2Str(dr));
+                    }
+                }
+
+                block_Rewind(atsc3_alp_packet_to_process->alp_payload);
+                uint16_t packet_size = block_Remaining_size(atsc3_alp_packet_to_process->alp_payload);
+                uint16_t alp_packet_size = 2 + packet_size;
+                uint8_t* ptr = block_Get(bbp_block);
+
+                ptr[0] = 0x00 | ((packet_size >> 8) & 0x7);
+                ptr[1] = packet_size & 0xFF;
+                bbp_block->i_pos += 2;
+
+                block_Write(bbp_block, block_Get(atsc3_alp_packet_to_process->alp_payload), packet_size);
+
+                if (total_alp_packet_count % 500 == 0) {
+                    printf("WriteMplpPacket: packet_num: %d, PLP: %d, with m_pBuf: %p, and ALP packet size is: %d, ALP header is: 0x%02x 0x%02x 0x%02x 0x%02x, bootsrap_timing_ref seconds: 0x%06x, a_milli: 0x%04x \n",
+                        num_packets_written,
+                        atsc3_alp_packet_to_process->plp_num,
+                        ptr,
+                        alp_packet_size,
+                        ptr[0],
+                        ptr[1],
+                        ptr[2],
+                        ptr[3],
+                        atsc3_alp_packet_to_process->bootstrap_timing_data_timestamp_short_reference.seconds_pre,
+                        atsc3_alp_packet_to_process->bootstrap_timing_data_timestamp_short_reference.a_milliseconds_pre);
+                }
+                last_plp = atsc3_alp_packet_to_process->plp_num;
             }
-
-            dr = m_DtOutp.WriteMplpPacket(atsc3_alp_packet_to_process->plp_num, m_pBuf, alp_packet_size);
-
-            if (dr != DTAPI_OK)
-                throw Exc(c_ErrFailWrite, ::DtapiResult2Str(dr));
-
             to_purge_queue.push(atsc3_alp_packet_to_process);
             to_dispatch_queue.pop();
         }
