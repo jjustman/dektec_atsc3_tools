@@ -9,43 +9,36 @@
 
 //.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.- Include files -.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-
 #include <stdarg.h>
+#include <string.h>
+#include <thread>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+
+using namespace std;
 #include "DtOpt.h"
+
+#include <atsc3_utils.h>
+#include <atsc3_logging_externs.h>
+#include <atsc3_pcap_type.h>
+#include <atsc3_stltp_parser.h>
+#include <atsc3_alp_parser.h>
+#include <atsc3_stltp_depacketizer.h>
+
+#include <phy/virtual/SRTRxSTLTPVirtualPHY.h>
+
+#define _SRT_STLTP_VIRTUAL_TEST_ERROR(...)   __LIBATSC3_TIMESTAMP_ERROR(__VA_ARGS__);
+#define _SRT_STLTP_VIRTUAL_TEST_WARN(...)    __LIBATSC3_TIMESTAMP_WARN(__VA_ARGS__);
+#define _SRT_STLTP_VIRTUAL_TEST_INFO(...)    __LIBATSC3_TIMESTAMP_INFO(__VA_ARGS__);
+#define _SRT_STLTP_VIRTUAL_TEST_DEBUG(...)   __LIBATSC3_TIMESTAMP_DEBUG(__VA_ARGS__);
+
+
 
 // Windows/Microsoft uses with _ => Linux uses without
 #ifndef WINBUILD
 #define _vsnprintf vsnprintf
 #define _vsnwprintf vswprintf
 #endif
-
-//.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.- PCAP-file -.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-
-
-#define PCAP_MAGIC_NUMBER_US     0xa1b2c3d4
-#define PCAP_MAGIC_NUMBER_NS     0xa1b23c4d
-#define PCAP_VERSION_MAJOR      2
-#define PCAP_VERSION_MINOR      4
-
-struct PcapFileHeader
-{
-    unsigned int  m_MagicNumber;        // Magic number
-    unsigned short  m_VersionMajor;     // Major version number
-    unsigned short  m_VersionMinor;     // Minor version number
-    unsigned int  m_ThisZone;           // GMT to local correction; Always 0
-    unsigned int  m_SigFigs;            // Accuracy of timestamps; Always 0
-    unsigned int  m_SnapLen;            // Maximum length of captured packets, in bytes
-    unsigned int  m_Network;            // Data link type
-};
-
-struct TimeVal
-{
-  int m_Seconds;
-  int m_NsOrUs;
-};
-struct PcapPckHeader
-{
-    TimeVal  m_TimeStamp;               // Timestamp
-    unsigned int  m_InclLen;            // Number of bytes saved in file
-    unsigned int  m_OrigLen;            // Original length of packet
-};
 
 //.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.- class Exc -.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-
 //
@@ -193,15 +186,13 @@ protected:
     void Log(const wchar_t* pMessage, bool IgnoreSilence=false);
     void LogF(const char* pMessage, ... );
     void LogF(const wchar_t* pMessage, ... );
-    void LoopFile();
     void ShowHelp();
     
-
     CommandLineParams  m_CmdLineParams;
 
     DtDevice  m_DtDvc;              // Our device
     //DtOutpChannel  m_DtOutp;        // Our output channel
-    DtMplpOutpChannel m_DtOutp; //jjustman-2020-01-17
+    DtMplpOutpChannel m_DtOutp;         //jjustman-2020-01-17
     DtAtsc3Pars m_Atsc3Pars; 
 
     bool  m_Modulator;              // Current output is a modulator
@@ -214,6 +205,40 @@ protected:
 
     char* m_pBuf;                   // Our data buffer
     int  m_ExitLoad;                // Load at which we should exit our loop
+
+
+public:
+    void atsc3StltpBasebandAlpPacketCollectionCallback(atsc3_alp_packet_collection_t* atsc3_alp_packet_collection);
+
+protected:
+
+    queue<atsc3_stltp_timing_management_packet_tv*>      atsc3_stltp_timing_management_packet_queue;
+    mutex                                                atsc3_stltp_timing_management_packet_queue_mutex;
+    condition_variable                                   atsc3_stltp_timing_management_packet_queue_condition;
+
+    queue<atsc3_stltp_preamble_packet_tv*>               atsc3_stltp_preamble_packet_queue;
+    mutex                                                atsc3_stltp_preamble_packet_queue_mutex;
+    condition_variable                                   atsc3_stltp_preamble_packet_queue_condition;
+
+    queue<atsc3_alp_packet_t*>                           atsc3_alp_packet_collection_queue;
+    mutex                                                atsc3_alp_packet_collection_queue_mutex;
+    condition_variable                                   atsc3_alp_packet_collection_queue_condition;
+
+
+    bool            processPreambleSettingsThreadShouldRun = false;
+    std::thread     processPreambleSettingsThread;
+    bool            processPreambleSettingsThreadShutdown = false;
+
+    void            processPreambleSettings();
+
+
+    bool            processDemuxedALPQueueThreadShouldRun = false;
+    std::thread     processDemuxedALPQueueThread;
+    bool            processDemuxedALPQueueThreadShutdown = false;
+
+    void            processDemuxedALPQueue();
+
+
 
 };
 

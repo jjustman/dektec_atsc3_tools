@@ -39,9 +39,11 @@ DtAtsc3Pars
 #include <sstream>
 
 #include <DTAPI.h>
+
 #include "DtPlay.h"
 #include "DtSdiFileFmt.h"
 #include "DtOpt.h"
+
 
 #ifdef WINBUILD
     #include <Windows.h>
@@ -85,6 +87,36 @@ int  _kbhit()
 }
 #endif
 
+
+void atsc3_stltp_timing_management_collection_callback(atsc3_stltp_timing_management_packet_tv* atsc3_stltp_timing_management_packet_v, void* context) {
+    Player* player = (Player*)context;
+    //player->atsc3StltpTimingManagementCollectionCallback(atsc3_stltp_timing_management_packet_v);
+}
+
+void atsc3_stltp_preamble_packet_collection_callback(atsc3_stltp_preamble_packet_tv* atsc3_stltp_preamble_packet_v, void* context) {
+    Player* player = (Player*)context;
+    //player->atsc3StltpPreamblePacketCollectionCallback(atsc3_stltp_preamble_packet_v);
+}
+
+void atsc3_stltp_baseband_alp_packet_collection_callback(atsc3_alp_packet_collection_t* atsc3_alp_packet_collection, void* context) {
+    Player* player = (Player*)context;
+    player->atsc3StltpBasebandAlpPacketCollectionCallback(atsc3_alp_packet_collection);
+}
+
+void Player::atsc3StltpBasebandAlpPacketCollectionCallback(atsc3_alp_packet_collection_t* atsc3_alp_packet_collection) {
+
+    lock_guard<mutex> atsc3_alp_packet_collection_queue_guard(atsc3_alp_packet_collection_queue_mutex);
+    
+    for (int i = 0; i < atsc3_alp_packet_collection->atsc3_alp_packet_v.count; i++) {
+        atsc3_alp_packet_t* atsc3_alp_packet = atsc3_alp_packet_collection->atsc3_alp_packet_v.data[i];
+        //jjustman-2020-09-02 todo: clone as we need to acquire ownership of these packets
+        atsc3_alp_packet_collection_queue.push(atsc3_alp_packet_clone(atsc3_alp_packet));
+    }
+
+    if (atsc3_alp_packet_collection_queue.size() > 64) {
+        atsc3_alp_packet_collection_queue_condition.notify_one();
+    }
+}
 
 //.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.- DtPlay Version -.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.
 #define DTPLAY_VERSION_MAJOR        4
@@ -415,60 +447,12 @@ void CommandLineParams::ParseCommandLine(int argc, char* argv[])
     list<wstring>  FreeArgs;
     DtOptItem::ParseOpt(CmdOptions, argc, argv, FreeArgs);
 
-   /* if (m_TxMode.IsSet())
-    {
-        if (m_TxMode.ToString() == L"SDI8B_525")
-            m_SdiSubValue = DTAPI_IOCONFIG_525I59_94;
-        else if (m_TxMode.ToString() == L"SDI8B_625")
-            m_SdiSubValue = DTAPI_IOCONFIG_625I50;
-        else if (m_TxMode.ToString() == L"DTSDI")
-            m_PlayDtSdiFile = true;
-    }
-    else if (m_ModType == DTAPI_MOD_ISDBT)
-        m_TxMode = DTAPI_TXMODE_204;
-    */
-    // ISDB-S3 uses PCAP input containing TLV data packets
-
     // Carrier defined?
     if (!m_CarrierFreq.IsSet())
-    {
-        //if (m_ModType == DTAPI_MOD_DVBS_QPSK)
-        //    m_CarrierFreq = 1915.0;     // L-Band
-        //else /* ISDBT, DVB-H/DVB-T, QAM */
-        m_CarrierFreq = 647.0;      // UHF-band
+    {        
+        m_CarrierFreq = 635.0;      // UHF-band
     }
 
-    //if (m_CodeRate.IsSet())
-    //{
-    //    if (m_ModType == DTAPI_MOD_DMBTH)
-    //        m_CodeRate.ParseEnum(DmbthCodeRate, L"mc");            
-    //    else
-    //        m_CodeRate.ParseEnum(DefaultCodeRate, L"mc");
-    //} else {
-    //    if (m_ModType == DTAPI_MOD_DMBTH)
-    //        m_CodeRate.MakeInt(DTAPI_MOD_DTMB_0_6);
-    //    else
-    //        m_CodeRate.MakeInt(DTAPI_MOD_3_4);
-    //}
-
-    //if (m_Constellation.IsSet())
-    //{
-    //    if (m_ModType == DTAPI_MOD_ATSC)
-    //        m_Constellation.ParseEnum(ConstellationAtsc, L"mC");
-    //    else if (m_ModType == DTAPI_MOD_DMBTH)
-    //        m_Constellation.ParseEnum(ConstallationDmbth, L"mC");
-    //    else
-    //        m_Constellation.ParseEnum(ConstallationDefault, L"mC");
-    //} else {
-    //    if ( m_ModType == DTAPI_MOD_ATSC )
-    //        m_Constellation.MakeInt(DTAPI_MOD_ATSC_VSB8);
-    //    else if ( m_ModType == DTAPI_MOD_DMBTH )
-    //        m_Constellation.MakeInt(DTAPI_MOD_DTMB_QAM64);
-    //    else if ( m_ModType == DTAPI_MOD_DVBT )
-    //        m_Constellation.MakeInt(DTAPI_MOD_DVBT_QAM64);
-    //    else
-    //        m_Constellation.MakeInt(-1); // don't care
-    //}
 
     if (m_Bandwidth.IsSet())
     {
@@ -483,29 +467,6 @@ void CommandLineParams::ParseCommandLine(int argc, char* argv[])
             m_Bandwidth.MakeInt(DTAPI_MOD_DTMB_8MHZ);
     }
 
-    if (m_Ipa.IsSet())
-    {
-        memset(&m_IpPars, 0, sizeof(m_IpPars));
-        m_IpPars.m_Port = 5678;
-        m_IpPars.m_Protocol = m_Ipp;
-        m_IpPars.m_NumTpPerIp = m_Ipn;
-        m_IpPars.m_TimeToLive = m_Ipt;
-
-        wstring  Address = m_Ipa.ToString();
-        size_t  Pos = Address.find(L":");
-        if (Pos != wstring::npos)
-        {
-            int  Port = wtoi(Address.c_str() + Pos + 1);
-            if (Port<0 || Port>0xFFFF)
-                throw Exc(c_CleInvalidArgument, "ipa");
-            m_IpPars.m_Port  = Port;
-            Address.resize(Pos);
-        }
-        DTAPI_RESULT dr = ::DtapiInitDtTsIpParsFromIpString(m_IpPars, Address.c_str(), NULL);
-        if (dr != DTAPI_OK)
-            throw Exc(c_CleInvalidArgument, "ipa");
-    }
-    
     //// Check for required parameters
     //if (FreeArgs.size()==0 && !m_ShowHelp)
     //    throw Exc(c_CleNoPlayFile);
@@ -1123,31 +1084,7 @@ void Player::AutoDetectSdiFormat()
     m_CmdLineParams.m_SdiSubValue
         = DtSdiDataType2VidStd(FileHdr.m_BaseHdr.m_DataType);
 }
-//-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.- Player::DetectPcapFormat -.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-
-//
-void Player::DetectPcapFormat()
-{
-    // Load file header from file
-    PcapFileHeader FileHdr;
-    int NumBytesRead = (int)fread(&FileHdr, 1, sizeof(FileHdr), m_pFile);
-    // Sanity check
-    if ( NumBytesRead != sizeof(FileHdr) )
-        throw Exc(c_ErrInvalidFileSize);
-    // Check if we have a valid header
-    if (FileHdr.m_MagicNumber == PCAP_MAGIC_NUMBER_US) {
-        m_m_PcapUsesNanoSeconds = false;
-    } else if (FileHdr.m_MagicNumber == PCAP_MAGIC_NUMBER_NS) {
-        m_m_PcapUsesNanoSeconds = true;
-    } else {
-        throw Exc(c_ErrInvalidPcapFileHdr);
-    }
-    // Check Link type Ethernet or IP
-    if (FileHdr.m_Network!=1 && FileHdr.m_Network!=101)
-    {
-        throw Exc(c_ErrInvalidPcapLinkType);
-    }
-    m_PcapEthernetLinkType = (FileHdr.m_Network == 1);
-}
+
 //-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.- Player::DisplayPlayInfo -.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.
 //
 void Player::DisplayPlayInfo()
@@ -1353,60 +1290,6 @@ void Player::InitOutput()
     if ( dr != DTAPI_OK )
         throw Exc( c_ErrFailSetTxControl, ::DtapiResult2Str(dr) );
 
-//    // Set the transmission mode. NOTE: ISDB-T only supports 204 byte mode
-//    int  TxMode = m_CmdLineParams.m_TxMode;
-//
-//    // First do a SetIoConfig to switch between ASI and SDI mode
-//    // This is not always required, but since we don't know the previous state of the port
-//    // it's easier to simply do this every time.
-//    if ((TxMode&DTAPI_TXMODE_TS) != 0)
-//    {
-//        if ((m_DtOutp.m_HwFuncDesc.m_Flags&DTAPI_CAP_ASI) != 0)
-//        {
-//            dr = m_DtOutp.SetIoConfig(DTAPI_IOCONFIG_IOSTD, DTAPI_IOCONFIG_ASI, -1);
-//            
-//            // If double buffering is used also set the IoConfig for the double buffer
-//            // port.
-//            if (m_CmdLineParams.m_DblBuff.IsSet())
-//            {
-//                int  DblBuffPort = m_CmdLineParams.m_DblBuff.ToInt();
-//                dr = m_DtDvc.SetIoConfig(DblBuffPort, DTAPI_IOCONFIG_IOSTD,
-//                                                                      DTAPI_IOCONFIG_ASI);
-//            }
-//        }
-//    }
-//    else
-//    {
-//        int  IoStd = -1, SubValue = -1;
-//        dr = ::DtapiVidStd2IoStd(m_CmdLineParams.m_SdiSubValue, IoStd, SubValue);
-//        if (dr != DTAPI_OK)
-//            throw Exc( c_ErrFailToGetIoStd, ::DtapiResult2Str(dr) );
-//        dr = m_DtOutp.SetIoConfig(DTAPI_IOCONFIG_IOSTD, IoStd, SubValue);
-//
-//        // If double buffering is set also set the IoConfig for the double buffer port
-//        if (m_CmdLineParams.m_DblBuff.IsSet())
-//        {
-//            int  DblBuffPort = m_CmdLineParams.m_DblBuff.ToInt();
-//            dr = m_DtDvc.SetIoConfig(DblBuffPort, DTAPI_IOCONFIG_IOSTD, IoStd, SubValue);
-//        }
-//    }
-//    if (dr != DTAPI_OK)
-//        throw Exc( c_ErrFailToSetIoConfig, ::DtapiResult2Str(dr) );
-//
-//// TODO
-// //   // Special case: if tx-rate is set to '0' we want to transmit on timestamp
-//    TxMode |= (m_CmdLineParams.m_TxRate==0) ? DTAPI_TXMODE_TXONTIME : 0;
-//    dr = m_DtOutp.SetTxMode( TxMode, m_CmdLineParams.m_Stuffing );
-//    if ( dr != DTAPI_OK )
-//      throw Exc( c_ErrFailSetTxMode, ::DtapiResult2Str(dr) );
-//
-//    // Apply IP settings (if we have a IP output)
-//    if ( m_Ip )
-//    {
-//        dr = m_DtOutp.SetIpPars( &m_CmdLineParams.m_IpPars );
-//        if ( dr != DTAPI_OK )
-//            throw Exc( c_ErrFailSetIpPars, ::DtapiResult2Str(dr) );
-//    }
 
     // Apply modulation settings (if we have a modulator)
     if ( m_Modulator )
@@ -1416,176 +1299,49 @@ void Player::InitOutput()
         if ( dr != DTAPI_OK )
             throw Exc( c_ErrFailSetRfControl, ::DtapiResult2Str(dr) );
 
-        //// Set modulation control
-        //if ( m_CmdLineParams.m_ModType==DTAPI_MOD_ATSC )
-        //{
-        //    dr = m_DtOutp.SetModControl( m_CmdLineParams.m_ModType,
-        //                                 m_CmdLineParams.m_Constellation,
-        //                                 32 /*32-taps*/, 0);
-        //}
-        //else if ( m_CmdLineParams.m_ModType==DTAPI_MOD_CMMB )
-        //{
-        //    // Fill the CMMB pars
-        //    DtCmmbPars CmmbPars;
-        //    CmmbPars.m_AreaId = 0;
-        //    CmmbPars.m_Bandwidth = 1;
-        //    CmmbPars.m_TsPid = -1;
-        //    CmmbPars.m_TxId = 0;
-        //                            
-        //    // Read a chunk of data and retrieve the TS-rate
-        //    char* pBuf = new char[4*1024*1024];
-        //    int NumRead = (int)fread(pBuf, 1, 4*1024*1024, m_pFile);
-        //    // Reset file pointer
-        //    ::fseek(m_pFile, 0, SEEK_SET);
-        //    dr = CmmbPars.RetrieveTsRateFromTs(pBuf, NumRead );
-        //    delete [] pBuf;            
-        //    if (dr != DTAPI_OK)
-        //        throw Exc(c_ErrCmmbTsRateFromTs, ::DtapiResult2Str(dr));
+        //jjustman-2020-01-17 - adding in test atsc3 mod support
 
-        //    // Set the CMMB modulation parameters
-        //    if (dr == DTAPI_OK)
-        //        dr = m_DtOutp.SetModControl( CmmbPars );
-        //}
-        //else if ( m_CmdLineParams.m_ModType==DTAPI_MOD_DAB )
-        //{
-        //    dr = m_DtOutp.SetModControl( m_CmdLineParams.m_ModType, -1, -1, -1);
-        //}
-        //else if ( m_CmdLineParams.m_ModType==DTAPI_MOD_T2MI )
-        //{
-        //    // Set the T2MI modulation parameters
-        //    int ParXtra1 = m_CmdLineParams.m_DataPid;
-        //    if (m_CmdLineParams.m_DataPid2 >= 0)
-        //    {
-        //        // Multi Profile
-        //        ParXtra1 |= (m_CmdLineParams.m_DataPid2<<DTAPI_MOD_T2MI_PID2_SHFT);
-        //        ParXtra1 |= DTAPI_MOD_T2MI_MULT_MSK;
-        //    }
-        //    dr = m_DtOutp.SetModControl( m_CmdLineParams.m_ModType, 
-        //                                 m_CmdLineParams.m_TxRate, 
-        //                                 ParXtra1,
-        //                                 -1);
-        //}
-        //else if ( m_CmdLineParams.m_ModType==DTAPI_MOD_DVBT )
-        //{
-        //    int XtraPar1 =    m_CmdLineParams.m_Bandwidth
-        //                    | m_CmdLineParams.m_Constellation
-        //                    | m_CmdLineParams.m_OfdmTxMode
-        //                    | m_CmdLineParams.m_OfdmGuardItv
-        //                    | DTAPI_MOD_DVBT_NATIVE;
+            /* int XtraPar0 = m_CmdLineParams.m_Constellation
+                | m_CmdLineParams.m_Bandwidth
+                | m_CmdLineParams.m_DtmbFrameHdrMode
+                | m_CmdLineParams.m_CodeRate
+                | DTAPI_MOD_DTMB_IL_2
+                | DTAPI_MOD_DTMB_USE_FRM_NO;*/
 
-        //    dr = m_DtOutp.SetModControl( m_CmdLineParams.m_ModType,
-        //                                 m_CmdLineParams.m_CodeRate,
-        //                                 XtraPar1, 0);
-        //}
-        //else if ( m_CmdLineParams.m_ModType==DTAPI_MOD_ISDBT )
-        //{
-        //    DtIsdbtPars IsdbtPars;
-        //    // First init ISDB-T parameter structure
-        //    InitIsdbtPars(IsdbtPars);
-        //    dr = m_DtOutp.SetModControl( IsdbtPars );
-        //}
-        //else if ( m_CmdLineParams.m_ModType==DTAPI_MOD_ISDBS )
-        //{
-        //    DtIsdbsPars IsdbsPars;
-        //    IsdbsPars.m_DoMux = false;
-        //    IsdbsPars.m_B15Mode = false;
-        //    dr = m_DtOutp.SetModControl( IsdbsPars );
-        //}
-        //else if (m_CmdLineParams.m_ModType==DTAPI_MOD_ISDBS3)
-        //{
-        //    DtIsdbS3Pars IsdbS3Pars;
-        //    // Use default ISDB-S3 parameters
-        //    dr = m_DtOutp.SetModControl( IsdbS3Pars );
-        //}
-        //else if (m_CmdLineParams.m_ModType==DTAPI_MOD_IQDIRECT )
-        //{
-        //    // Set IQ direct mode
-        //    dr = m_DtOutp.SetModControl(
-        //                m_CmdLineParams.m_ModType,
-        //                m_CmdLineParams.m_IqInterpFilter,   // Interpolation filter
-        //                m_CmdLineParams.m_TxRate,           // Sample rate
-        //                DTAPI_MOD_ROLLOFF_NONE);
-        //}
-        //else if (   m_CmdLineParams.m_ModType==DTAPI_MOD_DVBS_QPSK
-        //         || m_CmdLineParams.m_ModType==DTAPI_MOD_DVBS_BPSK )
-        //{
-        //    dr = m_DtOutp.SetModControl( m_CmdLineParams.m_ModType,
-        //                                 m_CmdLineParams.m_CodeRate,
-        //                                 0, 0 );
-        //}
-        //else if (    m_CmdLineParams.m_ModType==DTAPI_MOD_DVBS2_QPSK
-        //          || m_CmdLineParams.m_ModType==DTAPI_MOD_DVBS2_8PSK
-        //          || m_CmdLineParams.m_ModType==DTAPI_MOD_DVBS2_16APSK
-        //          || m_CmdLineParams.m_ModType==DTAPI_MOD_DVBS2_32APSK )
-        //{
-        //    int XtraPar1 =   m_CmdLineParams.m_DvbS2Pilots
-        //                   | m_CmdLineParams.m_DvbS2FecFrameLength;
-        //    int XtraPar2 =   m_CmdLineParams.m_DvbS2GoldSeqInit;
+        //jjustman-2020-09-02 - TODO - wire this up to our preamble packet
+        m_Atsc3Pars.m_Bandwidth = DTAPI_ATSC3_6MHZ;
+        m_Atsc3Pars.m_MinorVersion = 0;
+        m_Atsc3Pars.m_EasWakeup = 0;
 
-        //    dr = m_DtOutp.SetModControl( m_CmdLineParams.m_ModType,
-        //                                 m_CmdLineParams.m_CodeRate,
-        //                                 XtraPar1, XtraPar2);
-        //    
-        //}
-        //else if (m_CmdLineParams.m_ModType==DTAPI_MOD_DVBS2_L3)
-        //{
-        //    int  XtraPar0 = m_CmdLineParams.m_TxRate;
-        //    int  XtraPar1 = DTAPI_MOD_ROLLOFF_35;
-        //    int  XtraPar2 =   m_CmdLineParams.m_DvbS2GoldSeqInit;
-
-        //    dr = m_DtOutp.SetModControl(m_CmdLineParams.m_ModType,
-        //                                                    XtraPar0, XtraPar1, XtraPar2);
-        //}
-        //else if ( m_CmdLineParams.m_ModType==DTAPI_MOD_DMBTH )
-        //{
-        //    int XtraPar0 =    m_CmdLineParams.m_Constellation
-        //                    | m_CmdLineParams.m_Bandwidth
-        //                    | m_CmdLineParams.m_DtmbFrameHdrMode
-        //                    | m_CmdLineParams.m_CodeRate
-        //                    | DTAPI_MOD_DTMB_IL_2
-        //                    | DTAPI_MOD_DTMB_USE_FRM_NO;
-
-        //    dr = m_DtOutp.SetModControl( m_CmdLineParams.m_ModType,
-        //                                 XtraPar0,
-        //                                 0, 0);
-        //}
-        //else 
-        if (m_CmdLineParams.m_ModType == DTAPI_MOD_ATSC3) {
-            //jjustman-2020-01-17 - adding in test atsc3 mod support
-
-               /* int XtraPar0 = m_CmdLineParams.m_Constellation
-                    | m_CmdLineParams.m_Bandwidth
-                    | m_CmdLineParams.m_DtmbFrameHdrMode
-                    | m_CmdLineParams.m_CodeRate
-                    | DTAPI_MOD_DTMB_IL_2
-                    | DTAPI_MOD_DTMB_USE_FRM_NO;*/
-
-            m_Atsc3Pars.m_Bandwidth = DTAPI_ATSC3_6MHZ;
-            m_Atsc3Pars.m_MinorVersion = 0;
-            m_Atsc3Pars.m_EasWakeup = 0;
-
-            /**
-            DTAPI_ATSC3_FFT_8K 8K FFT DTAPI_ATSC3_FFT_16K 16K FFT DTAPI_ATSC3_FFT_32K 32K FFT */
-            m_Atsc3Pars.m_PreambleFftSize = DTAPI_ATSC3_FFT_8K;
+        /**
+        DTAPI_ATSC3_FFT_8K 8K FFT DTAPI_ATSC3_FFT_16K 16K FFT DTAPI_ATSC3_FFT_32K 32K FFT */
+        m_Atsc3Pars.m_PreambleFftSize = DTAPI_ATSC3_FFT_8K;
 
 
-            m_Atsc3Pars.m_PreambleGuardInterval = DTAPI_ATSC3_GI_5_1024;
-            m_Atsc3Pars.m_PreamblePilotDx = DTAPI_ATSC3_PP_DX_3;
-            m_Atsc3Pars.m_PreambleReducedCarriers = 0;
-            m_Atsc3Pars.m_L1BasicFecMode = 1;
-            m_Atsc3Pars.m_L1DetailFecMode = 1;
-            m_Atsc3Pars.m_L1DetailAddParity = 0;
-            /*
-            DTAPI_ATSC3_TIME_NONE No time information is generated DTAPI_ATSC3_TIME_MS Time information in millisecond precision is generated DTAPI_ATSC3_TIME_US Time information in microsecond precision is generated DTAPI_ATSC3_TIME_NS Time information in nanosecond precision is generated
-            */
-            m_Atsc3Pars.m_TimeInfoFlag = DTAPI_ATSC3_TIME_NONE;
-            m_Atsc3Pars.m_LlsFlag = true;
-            /*
-            DTAPI_ATSC3_PAPR_NONE None DTAPI_ATSC3_PAPR_ACE ACE - Active Constellation Extension DTAPI_ATSC3_PAPR_TR TR - Power reduction with reserved carriers DTAPI_ATSC3_PAPR_ACE_TR ACE and TR
-    */
-            m_Atsc3Pars.m_Papr = DTAPI_ATSC3_PAPR_NONE;
-            m_Atsc3Pars.m_FrameLengthMode = DTAPI_ATSC3_ALIGN_SYMBOL; // DTAPI_ATSC3_ALIGN_TIME 
-            m_Atsc3Pars.m_FrameLength = 0;
+        m_Atsc3Pars.m_PreambleGuardInterval = DTAPI_ATSC3_GI_6_1536;
+        m_Atsc3Pars.m_PreamblePilotDx = DTAPI_ATSC3_PP_DX_4;
+        m_Atsc3Pars.m_PreambleReducedCarriers = 0;
+        m_Atsc3Pars.m_L1BasicFecMode = 1;
+        m_Atsc3Pars.m_L1DetailFecMode = 1;
+        m_Atsc3Pars.m_L1DetailAddParity = 0;
+        /*
+        DTAPI_ATSC3_TIME_NONE No time information is generated DTAPI_ATSC3_TIME_MS Time information in millisecond precision is generated DTAPI_ATSC3_TIME_US Time information in microsecond precision is generated DTAPI_ATSC3_TIME_NS Time information in nanosecond precision is generated
+        */
+        m_Atsc3Pars.m_TimeInfoFlag = DTAPI_ATSC3_TIME_NONE;
+        m_Atsc3Pars.m_LlsFlag = true;
+        /*
+        DTAPI_ATSC3_PAPR_NONE None DTAPI_ATSC3_PAPR_ACE ACE - Active Constellation Extension DTAPI_ATSC3_PAPR_TR TR - Power reduction with reserved carriers DTAPI_ATSC3_PAPR_ACE_TR ACE and TR
+*/
+        m_Atsc3Pars.m_Papr = DTAPI_ATSC3_PAPR_NONE;
+        m_Atsc3Pars.m_FrameLengthMode = DTAPI_ATSC3_ALIGN_SYMBOL; // DTAPI_ATSC3_ALIGN_TIME 
+        m_Atsc3Pars.m_FrameLength = 0;
+
+        
+
+        //DtAtsc3PlpPars 
+        //jjustman - mocked for now
+        int num_plps = 2;
+        for (int i = 0; i < num_plps; i++) {
 
             //subframes config
             DtAtsc3SubframePars mySubframeParams;
@@ -1597,25 +1353,24 @@ void Player::InitOutput()
 
             /*
             DTAPI_ATSC3_FFT_8K 8K FFT DTAPI_ATSC3_FFT_16K 16K FFT DTAPI_ATSC3_FFT_32K 32K FFT */
-            mySubframeParams.m_FftSize = DTAPI_ATSC3_FFT_8K;
+            mySubframeParams.m_FftSize = (i == 0) ? DTAPI_ATSC3_FFT_8K : DTAPI_ATSC3_FFT_16K;
 
             mySubframeParams.m_ReducedCarriers = 0;
-            mySubframeParams.m_GuardInterval = DTAPI_ATSC3_GI_5_1024;
-            mySubframeParams.m_PilotPattern = DTAPI_ATSC3_PP_3_4;
+            mySubframeParams.m_GuardInterval = (i == 0) ? DTAPI_ATSC3_GI_6_1536 : DTAPI_ATSC3_GI_6_1536;
+            mySubframeParams.m_PilotPattern = (i == 0) ? DTAPI_ATSC3_PP_4_2 : DTAPI_ATSC3_PP_4_4;
 
-            mySubframeParams.m_PilotBoost = 4;
-            mySubframeParams.m_SbsFirst = false;
-            mySubframeParams.m_SbsLast = true; //workaround for SL3010 - jjustman-2020-01-17
+            mySubframeParams.m_PilotBoost = 0;
+            mySubframeParams.m_SbsFirst = true;
+            mySubframeParams.m_SbsLast = true;
 
-            mySubframeParams.m_NumOfdmSymbols = 72;
-            mySubframeParams.m_FreqInterleaver = false;
-
-            //DtAtsc3PlpPars 
+            mySubframeParams.m_NumOfdmSymbols = (i == 0) ? 43 : 71;
+            mySubframeParams.m_FreqInterleaver = true;
 
             DtAtsc3PlpPars m_atsc3PlpPars;
             m_atsc3PlpPars.Init();
-            m_atsc3PlpPars.m_Id = 0;
-            m_atsc3PlpPars.m_LlsFlag = true;
+            m_atsc3PlpPars.m_Id = i; //plp_id
+            m_atsc3PlpPars.m_LlsFlag = (i == 0) ? true : false;
+
             /*
             DTAPI_ATSC3_LAYER_CORE Core layer DTAPI_ATSC3_LAYER_ENHANCED Enhanced layer */
             m_atsc3PlpPars.m_Layer = DTAPI_ATSC3_LAYER_CORE;
@@ -1627,14 +1382,14 @@ void Player::InitOutput()
                 DTAPI_ATSC3_QAM256 256-QAM
                 DTAPI_ATSC3_QAM1024 1024-QAM
                 DTAPI_ATSC3_QAM4096 4096-QAM */
-            m_atsc3PlpPars.m_Modulation = DTAPI_ATSC3_QAM256;
-            m_atsc3PlpPars.m_CodeRate = DTAPI_ATSC3_COD_9_15;
+            m_atsc3PlpPars.m_Modulation = (i == 0) ? DTAPI_ATSC3_QAM16 : DTAPI_ATSC3_QAM256;
+            m_atsc3PlpPars.m_CodeRate = (i == 0) ? DTAPI_ATSC3_COD_11_15 : DTAPI_ATSC3_COD_11_15; //DTAPI_ATSC3_COD_9_15
 
             /*
             DTAPI_ATSC3_LDPC_16K 16K LDPC
             DTAPI_ATSC3_LDPC_64K 64K LDPC
             */
-            m_atsc3PlpPars.m_FecCodeLength = DTAPI_ATSC3_LDPC_16K;
+            m_atsc3PlpPars.m_FecCodeLength = DTAPI_ATSC3_LDPC_64K; //DTAPI_ATSC3_LDPC_16K;
             /*
             DTAPI_ATSC3_OUTER_BCH BCH outer code
             DTAPI_ATSC3_OUTER_CRC CRC outer code
@@ -1651,8 +1406,8 @@ void Player::InitOutput()
 
             /*
             ignoring w/ DTAPI_ATSC3_PLPTYPE_NONDISP
-              int  m_NumSubslices;        // Number of subslices: 1...16384, if PlpType is dispersed
-              int  m_SubsliceInterval;    // Interval: 1.. 2^24-1, if PlpType is dispersed
+                int  m_NumSubslices;        // Number of subslices: 1...16384, if PlpType is dispersed
+                int  m_SubsliceInterval;    // Interval: 1.. 2^24-1, if PlpType is dispersed
 
             */
 
@@ -1664,41 +1419,37 @@ void Player::InitOutput()
             m_atsc3PlpPars.m_TiMode = DTAPI_ATSC3_TIMODE_NONE;
 
             /**
-
-            ignoring:
-
-             int  m_CtiDepth;            // Convolutional time interleaver depth,
+                int  m_CtiDepth;            // Convolutional time interleaver depth,
                                     // see DTAPI_ATSC3_CTIDEPTH_xx, if TiMode=CTI
-            bool  m_TiExtInterleaving;  // Enable extended interleaving
+                bool  m_TiExtInterleaving;  // Enable extended interleaving
 
-            // HTI interleaving parameters (only applicable if TiMode=HTI)
-            bool  m_HtiInterSubframe;   // Enable inter-subframe interleaving
-            int  m_HtiNumTiBlocks;      // If inter-subframe interleaving is disabled: the
-                                        // number of TI blocks per interleaving frame.
-                                        // If inter-subframe interleaving is enabled:
-                                        // the number of subframes over which cells from
-                                        // one TI block are carried. Range: 1..16
-            int  m_HtiNumFecBlocksMax;  // The maximum number of FEC blocks per interleaving frame
-                                        // for the current PLP: 1..4096
-            bool  m_HtiCellInterleaver; // Enable the cell-interleaver
+                // HTI interleaving parameters (only applicable if TiMode=HTI)
+                bool  m_HtiInterSubframe;   // Enable inter-subframe interleaving
+                int  m_HtiNumTiBlocks;      // If inter-subframe interleaving is disabled: the
+                                            // number of TI blocks per interleaving frame.
+                                            // If inter-subframe interleaving is enabled:
+                                            // the number of subframes over which cells from
+                                            // one TI block are carried. Range: 1..16
+                int  m_HtiNumFecBlocksMax;  // The maximum number of FEC blocks per interleaving frame
+                                            // for the current PLP: 1..4096
+                bool  m_HtiCellInterleaver; // Enable the cell-interleaver
 
             */
 
             m_atsc3PlpPars.m_NumChannelBonded = 0;
 
             /*
-            scheduling params, ignoring:
 
-             int  m_CoreLayerPlpId;      // If enhanced layer, the PLP ID of the corresponding
-                                    // core layer. Currently the enhanced layer is scheduled
-                                    // with the same number of cells as the core layer.
-             int  m_HtiNumFecBlocks;     // Used when TiMode = HTI and core layer.
-                                    // The number of FEC blocks per subframe,
-                                    // range: 1..m_HtiNumFecBlocksMax
+                int  m_CoreLayerPlpId;      // If enhanced layer, the PLP ID of the corresponding
+                                              // core layer. Currently the enhanced layer is scheduled
+                                               // with the same number of cells as the core layer.
+                int  m_HtiNumFecBlocks;     // Used when TiMode = HTI and core layer.
+                                             // The number of FEC blocks per subframe,
+                                             // range: 1..m_HtiNumFecBlocksMax
             */
 
             /*
-             // For core layer: used when TiMode = NONE or CTI.
+                // For core layer: used when TiMode = NONE or CTI.
                                     // The number of cells per subframe, -1 means to use the
                                     // full subframe.
                                     // For enhanced layer: -1 means the complete size of the
@@ -1709,7 +1460,7 @@ void Player::InitOutput()
 
 
             /*
-              // If -1, plp_start is automatically set by allocating
+                // If -1, plp_start is automatically set by allocating
                                     // PLPs by increasing PLP index assuming each PLP uses
                                     // m_PlpSize cells (plp_type=non-dispersed) or
                                     // ceil(m_PlpSize/m_NumSubslices) cells
@@ -1723,14 +1474,8 @@ void Player::InitOutput()
 
             m_atsc3PlpPars.m_PlpStart = -1;
 
-
             mySubframeParams.m_Plps.push_back(m_atsc3PlpPars);
 
-            m_Atsc3Pars.m_Subframes.push_back(mySubframeParams);
-
-            //plp config for DT I/O
-
-            m_Atsc3Pars.m_NumPlpInputs = 1;
             DtPlpInpPars myPlpInpPars;
             myPlpInpPars.Init();
             myPlpInpPars.m_DataType = myPlpInpPars.ALP;
@@ -1747,51 +1492,33 @@ void Player::InitOutput()
             The valid range of m_FifoIdx is 0 … 255.
             */
 
-            myPlpInpPars.m_FifoIdx = 0;
-            m_Atsc3Pars.m_PlpInputs[0] = myPlpInpPars;
+            myPlpInpPars.m_FifoIdx = i;
+            m_Atsc3Pars.m_PlpInputs[i] = myPlpInpPars;
 
-            DTAPI_RESULT atsc3ParsValid = m_Atsc3Pars.CheckValidity();
+            m_Atsc3Pars.m_Subframes.push_back(mySubframeParams);
 
-            if (atsc3ParsValid != DTAPI_OK) {
-                printf("m_Atsc3Pars.CheckValidity returned: %d\n", atsc3ParsValid);
-                exit(1);
-            }
-            else {
-                printf("m_Atsc3Pars.CheckValidity returned: DTAPI_OK, continuing\n");
-            }
-
-
-            dr = m_DtOutp.SetModControl(m_Atsc3Pars);
         }
-        //} else // For now, assume it must be QAM then
-        //{
-        //    dr = m_DtOutp.SetModControl( m_CmdLineParams.m_ModType,
-        //                                 m_CmdLineParams.m_QamJ83Annex,
-        //                                 0, 0);
-        //}
+
+
+        //plp config for DT I/O
+
+        m_Atsc3Pars.m_NumPlpInputs = num_plps;
+
+        DTAPI_RESULT atsc3ParsValid = m_Atsc3Pars.CheckValidity();
+
+        if (atsc3ParsValid != DTAPI_OK) {
+            printf("m_Atsc3Pars.CheckValidity returned: %d\n", atsc3ParsValid);
+            exit(1);
+        }
+        else {
+            printf("m_Atsc3Pars.CheckValidity returned: DTAPI_OK, continuing\n");
+        }
+
+
+        dr = m_DtOutp.SetModControl(m_Atsc3Pars);
+    
         if ( dr != DTAPI_OK )
             throw Exc( c_ErrFailSetModControl, ::DtapiResult2Str(dr) );
-    }
-
-    // Set bit-rate for non-SDI and modulators other than CMMB/T2MI/ISDBT/ISDBS3/IQ/DVB-H/DVB-T/DTMB
-    if (    (  !m_Modulator && 0==(m_CmdLineParams.m_TxMode&DTAPI_TXMODE_SDI) )
-         || (   m_Modulator && m_CmdLineParams.m_ModType!=DTAPI_MOD_DVBT
-                            && m_CmdLineParams.m_ModType!=DTAPI_MOD_CMMB
-                            && m_CmdLineParams.m_ModType!=DTAPI_MOD_DVBS2_L3
-                            && m_CmdLineParams.m_ModType!=DTAPI_MOD_T2MI
-                            && m_CmdLineParams.m_ModType!=DTAPI_MOD_ISDBT
-                            && m_CmdLineParams.m_ModType!=DTAPI_MOD_ISDBS3
-                            && m_CmdLineParams.m_ModType!=DTAPI_MOD_IQDIRECT
-                            && m_CmdLineParams.m_ModType!=DTAPI_MOD_DMBTH) )
-
-    {
-        // A rate of '0' is a special case (see code above)
-        if ( m_CmdLineParams.m_TxRate > 0 )
-        {
-            dr = m_DtOutp.SetTsRateBps( m_CmdLineParams.m_TxRate );
-            if ( dr != DTAPI_OK )
-                throw Exc( c_ErrFailSetTsRate, ::DtapiResult2Str(dr) );
-        }
     }
 
     // Set output level of main output (if supported)
@@ -1804,7 +1531,6 @@ void Player::InitOutput()
             throw Exc( c_ErrFailedToSetOutputLevel, ::DtapiResult2Str(dr) );
     }
 
-
     // Set spectral inversion
     if (m_Modulator && m_CmdLineParams.m_SpecInvers.ToBool())
     {
@@ -1812,57 +1538,6 @@ void Player::InitOutput()
         if ( dr != DTAPI_OK )
             throw Exc( c_ErrFailedToSetOutputLevel, ::DtapiResult2Str(dr) );
     }
-
-    //// Set signal-to-noise ratio
-    //if ( m_Modulator && (   (m_DtOutp.m_HwFuncDesc.m_Flags & DTAPI_CAP_SNR)!=0 
-    //                     || (m_DtOutp.m_HwFuncDesc.m_Flags & DTAPI_CAP_CM)!=0 ) )
-    //{
-    //   // Use SetSNR for DVB-S/S2 modulation and SetChannelModelig for others
-    //    bool  IsDvbS_S2 = (   m_CmdLineParams.m_ModType==DTAPI_MOD_DVBS_QPSK 
-    //                       || m_CmdLineParams.m_ModType==DTAPI_MOD_DVBS2_QPSK
-    //                       || m_CmdLineParams.m_ModType==DTAPI_MOD_DVBS2_8PSK
-    //                       || m_CmdLineParams.m_ModType==DTAPI_MOD_DVBS2_16APSK
-    //                       || m_CmdLineParams.m_ModType==DTAPI_MOD_DVBS2_32APSK);
-    //    bool  IsIsdbS_S3 = (   m_CmdLineParams.m_ModType==DTAPI_MOD_ISDBS
-    //                        || m_CmdLineParams.m_ModType==DTAPI_MOD_ISDBS3);
-
-    //    if (!m_CmdLineParams.m_Snr.IsSet())
-    //    {
-    //        if (IsDvbS_S2 || IsIsdbS_S3)
-    //            m_DtOutp.SetSnr(DTAPI_NOISE_DISABLED, 0);
-    //        else
-    //        {
-    //            // Init CM-pars
-    //            DtCmPars  CmPars;
-    //            CmPars.m_EnableAwgn = false; // Disable agwn
-    //            CmPars.m_Snr = m_CmdLineParams.m_Snr.ToDouble();
-    //            CmPars.m_EnablePaths = false;   // No echo paths
-
-    //            dr = m_DtOutp.SetChannelModelling(false, CmPars);
-    //        }
-    //    }
-    //    else
-    //    {  
-    //        if (IsDvbS_S2 || IsIsdbS_S3)
-    //        {
-    //            // The SetSnr method expects a level expressed in 0.1dBm units
-    //            int Snr = int(m_CmdLineParams.m_Snr.ToDouble() * 10.0);
-    //            dr = m_DtOutp.SetSnr(DTAPI_NOISE_WNG_HW, Snr);
-    //        }
-    //        else
-    //        {
-    //            // Init CM-pars
-    //            DtCmPars  CmPars;
-    //            CmPars.m_EnableAwgn = true; // Enable agwn
-    //            CmPars.m_Snr = m_CmdLineParams.m_Snr.ToDouble();
-
-    //            CmPars.m_EnablePaths = false;   // No echo paths
-    //            dr = m_DtOutp.SetChannelModelling(true, CmPars);
-    //        }
-    //    }
-    //    if ( dr != DTAPI_OK )
-    //        throw Exc( c_ErrFailedToSetSNR, ::DtapiResult2Str(dr) );
-    //}
 
     // Final initialisation
     dr = m_DtOutp.ClearFifo();          // Clear FIFO (i.e. start with zero load)
@@ -1925,24 +1600,52 @@ void Player::LogF(const wchar_t* pMessage, ... )
 }
 
 
-//-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.- Player::Play -.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-
+//-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.- Player::processDemuxedALPQueue -.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-
 //
-void Player::LoopFile()
+void Player::processPreambleSettings() {
+
+    while (this->processPreambleSettingsThreadShouldRun) {
+        //wait condition
+         //critical section
+        {
+            unique_lock<mutex> condition_lock(atsc3_stltp_preamble_packet_queue_mutex);
+            atsc3_stltp_preamble_packet_queue_condition.wait(condition_lock);
+
+            while (atsc3_stltp_preamble_packet_queue.size()) {
+                //run with the acquired lock, less hassle and low PPS, do not free as that is the depacketizers ownership of preamble packet
+                atsc3_stltp_preamble_packet_tv* atsc3_stltp_preamble_packet_tv = atsc3_stltp_preamble_packet_queue.front();
+                for (int i = 0; i < atsc3_stltp_preamble_packet_tv->count; i++) {
+                    atsc3_stltp_preamble_packet_t* atsc3_stltp_preamble_packet = atsc3_stltp_preamble_packet_tv->data[i];
+                    atsc3_preamble_packet_t* atsc3_preamble_packet = atsc3_stltp_preamble_packet->preamble_packet;
+
+                    atsc3_preamble_packet_dump(atsc3_preamble_packet);
+                }
+                atsc3_stltp_preamble_packet_queue.pop();
+            }
+            condition_lock.unlock();
+        }
+    }
+}
+
+void Player::processDemuxedALPQueue()
 {
+    queue<atsc3_alp_packet_t*> to_dispatch_queue; //perform a shallow copy so we can exit critical section asap
+    queue<atsc3_alp_packet_t*> to_purge_queue; //perform a shallow copy so we can exit critical section asap
+
+    int total_alp_packet_count = 0;
+    block_t* bbp_block = block_Alloc(64000);
+
     bool EoF(false), TxStarted(false);
     DTAPI_RESULT dr;
     int NumBytesRead, FifoLoad, FifoSize;
     int MinFifoLoad;
 
     uint32_t num_packets_written = 0;
-
+    //m_DtOutp.SetFifoSize(16384000);
     // Init channel to hold mode
     dr = m_DtOutp.SetTxControl(DTAPI_TXCTRL_HOLD);
     if ( dr != DTAPI_OK )
         throw Exc(c_ErrFailSetTxControl, ::DtapiResult2Str(dr));
-
-    // Load number of times to play file
-    int LoopCnt = m_CmdLineParams.m_LoopCnt;
 
     // Get current FIFO-size
     dr = m_DtOutp.GetFifoSize(FifoSize);
@@ -1950,83 +1653,82 @@ void Player::LoopFile()
         throw Exc(c_ErrFailGetFifoSize, ::DtapiResult2Str(dr));
 
     // Set Minimum Fifoload for SDI playout to FifoSize *3/4 
-    MinFifoLoad = (m_CmdLineParams.m_PlayDtSdiFile == false) ? c_MinFifoLoad : (FifoSize*3)/4;
+    MinFifoLoad = c_MinFifoLoad; // (FifoSize * 3) / 4;
 
-    while (!_kbhit())
+    while (this->processDemuxedALPQueueThreadShouldRun)
     {
         // Check for free space in hardware FIFO.
-        dr = m_DtOutp.GetFifoLoad(FifoLoad);
-        if ( (FifoLoad + c_BufSize)>=FifoSize )
-        {
-            // Sleep to wait for some free space
-#ifdef WINBUILD
-            ::Sleep(2);
-#else
-            usleep(2000);
-#endif 
-            continue;
-        }
+//        dr = m_DtOutp.GetFifoLoad(FifoLoad);
+//        if ( (FifoLoad + c_BufSize)>=FifoSize )
+//        {
+//            // Sleep to wait for some free space
+//#ifdef WINBUILD
+//            ::Sleep(2);
+//#else
+//            usleep(2000);
+//#endif 
+//            continue;
+//        }
 
-        if (m_CmdLineParams.m_PlayPcapFile)
-        {
-            /**
-            only read into m_pBuf + sizeof(ALP_packet_header_t)
-            as we also need to set payload length
+      
+        ///**
+        //only read into m_pBuf + sizeof(ALP_packet_header_t)
+        //as we also need to set payload length
 
-            atsc3_alp_packet_header {
-                                        bits
-                packet_type             3
-                payload_configuration   1
-                header_mode             1
+        //atsc3_alp_packet_header {
+        //                            bits
+        //    packet_type             3
+        //    payload_configuration   1
+        //    header_mode             1
 
-                length                  11   (16 bits, 2 bytes)
-            */
+        //    length                  11   (16 bits, 2 bytes)
+        //*/
            
-            // PCAP Ethernet , IP and UDP-header lengths
-            static const int  ETH_HDR_LENGTH = 14;
-            static const int  IP_HDR_LENGTH = 20;
-            static const int  UDP_HDR_LENGTH = 8;
-            int  SkipLength = 0; //do not skip ip/udp for ATSC3 ALP IP_HDR_LENGTH + UDP_HDR_LENGTH;
-            unsigned short EthHdr[ETH_HDR_LENGTH + IP_HDR_LENGTH + UDP_HDR_LENGTH];
-            // Read PCAP-packet header
-            PcapPckHeader  PckHdr;
-            if (fread(&PckHdr, 1, sizeof(PckHdr), m_pFile) != sizeof(PckHdr))
-                EoF = true;
+        //// PCAP Ethernet , IP and UDP-header lengths
+        //static const int  ETH_HDR_LENGTH = 14;
+        //static const int  IP_HDR_LENGTH = 20;
+        //static const int  UDP_HDR_LENGTH = 8;
+        //int  SkipLength = 0; //do not skip ip/udp for ATSC3 ALP IP_HDR_LENGTH + UDP_HDR_LENGTH;
+        //unsigned short EthHdr[ETH_HDR_LENGTH + IP_HDR_LENGTH + UDP_HDR_LENGTH];
+        //// Read PCAP-packet header
+        //PcapPckHeader  PckHdr;
+        //if (fread(&PckHdr, 1, sizeof(PckHdr), m_pFile) != sizeof(PckHdr))
+        //    EoF = true;
 
-            if (!EoF)
-            {
-                // Sanity check
-                if (PckHdr.m_InclLen>(unsigned int)c_BufSize)
-                    throw Exc(c_ErrPcapFormat);
-                int Length = PckHdr.m_InclLen;
-                // Skip the Ethernet header
-                if (m_PcapEthernetLinkType)
-                    SkipLength += ETH_HDR_LENGTH;
-                if (Length <= SkipLength)
-                    throw Exc(c_ErrPcapFormat);
-                // Skip Ethernet and IP-header
-                if (fread(EthHdr, 1, SkipLength, m_pFile) != SkipLength)
-                    EoF = true;
-                if (!EoF)
-                {
-                    // Read the data part of the packet
-                    NumBytesRead = Length - SkipLength;
-                    if (fread(m_pBuf+2, 1, NumBytesRead, m_pFile) != NumBytesRead)
-                        EoF = true;
-                }
-            }
+        //    if (!EoF)
+        //    {
+        //        // Sanity check
+        //        if (PckHdr.m_InclLen>(unsigned int)c_BufSize)
+        //            throw Exc(c_ErrPcapFormat);
+        //        int Length = PckHdr.m_InclLen;
+        //        // Skip the Ethernet header
+        //        if (m_PcapEthernetLinkType)
+        //            SkipLength += ETH_HDR_LENGTH;
+        //        if (Length <= SkipLength)
+        //            throw Exc(c_ErrPcapFormat);
+        //        // Skip Ethernet and IP-header
+        //        if (fread(EthHdr, 1, SkipLength, m_pFile) != SkipLength)
+        //            EoF = true;
+        //        if (!EoF)
+        //        {
+        //            // Read the data part of the packet
+        //            NumBytesRead = Length - SkipLength;
+        //            if (fread(m_pBuf+2, 1, NumBytesRead, m_pFile) != NumBytesRead)
+        //                EoF = true;
+        //        }
+        //    }
 
-            // Only read complete packets of right length
-            if (EoF)
-                NumBytesRead = 0;
-            //// Check length
-            //else if (NumBytesRead != ISDBS3_TLV_PACKET_SIZE)
-            //    throw Exc(c_ErrIsdbS3TlvFormat);
-        }
-        else
-        { 
-            printf("bulk read code should not be run for atsc3");
-            exit(-1);
+        //    // Only read complete packets of right length
+        //    if (EoF)
+        //        NumBytesRead = 0;
+        //    //// Check length
+        //    //else if (NumBytesRead != ISDBS3_TLV_PACKET_SIZE)
+        //    //    throw Exc(c_ErrIsdbS3TlvFormat);
+        //}
+        //else
+        //{ 
+        //    printf("bulk read code should not be run for atsc3");
+        //    exit(-1);
 
         //    // Read as much bytes as possible into our buffer
         //NumBytesRead = (int)fread( m_pBuf, sizeof(char), c_BufSize, m_pFile );
@@ -2042,46 +1744,133 @@ void Player::LoopFile()
         //        NumBytesRead &= ~3;
         //    }
         //}
+       
+        // There is data write it to our output
+        //
+        // NOTE: Write blocks until all data has been transferred to the output
+        // dr = m_DtOutp.Write( m_pBuf, NumBytesRead );
+        //don't confuse this with WriteMplp  for TS188/TS204 / GRE... use WriteMplpPacket
+
+        //pack our ALP header here
+
+        //bits:
+        /* +packet_type (000)
+            | 
+            |  +payload_configuration (0)
+            |  |
+            |  | +header_mode (0)
+            |  | |+length (11 bits)
+            |--| ||--     ---- ---| 
+            0000 0xxx     xxxx xxxx 
+            */
+
+        //critical section
+        {
+            unique_lock<mutex> condition_lock(atsc3_alp_packet_collection_queue_mutex);
+            atsc3_alp_packet_collection_queue_condition.wait(condition_lock);
+
+            while (atsc3_alp_packet_collection_queue.size()) {
+                to_dispatch_queue.push(atsc3_alp_packet_collection_queue.front());
+                atsc3_alp_packet_collection_queue.pop();
+            }
+            condition_lock.unlock();
         }
 
-        if (NumBytesRead > 0) {
-            // There is data write it to our output
-            //
-            // NOTE: Write blocks until all data has been transferred to the output
-           // dr = m_DtOutp.Write( m_pBuf, NumBytesRead );
-            //don't confuse this with WriteMplp  for TS188/TS204 / GRE... use WriteMplpPacket
+        /*        jjustman-2020-09-02 - TODO: chunk this up into bootstrap_ref emission time and PLP*/
 
-            //pack our ALP header here
+        //                if (last_plp != -1) { // && last_plp != atsc3_alp_packet_to_process->plp_num) {
 
-            //bits:
-            /* +packet_type (000)
-               | 
-               |  +payload_configuration (0)
-               |  |
-               |  | +header_mode (0)
-               |  | |+length (11 bits)
-               |--| ||--     ---- ---| 
-               0000 0xxx     xxxx xxxx 
-               */
-               
-            m_pBuf[0] = 0x00 | ((NumBytesRead >> 8) & 0x7);
-            m_pBuf[1] = NumBytesRead & 0xFF;
+        //printf("PcapSTLTPVirtualPHY::PcapConsumerThreadRun - pushing %d packets", to_dispatch_queue.size());
+        while (to_dispatch_queue.size()) {
+            atsc3_alp_packet_t* atsc3_alp_packet_to_process = to_dispatch_queue.front();
+            block_Rewind(bbp_block);
+            int currentPLP = atsc3_alp_packet_to_process->plp_num;
 
-            NumBytesRead += 2;
+            if (atsc3_alp_packet_to_process->alp_packet_header.packet_type == 0x00 || atsc3_alp_packet_to_process->alp_packet_header.packet_type == 0x04) {
 
-            if ((num_packets_written++ % 100) == 0) {
-                printf("WriteMplpPacket: with m_pBuf: %p, and ALP packet len is: %d, ALP header is: 0x%02x 0x%02x 0x%02x 0x%02x\n",
-                    m_pBuf, NumBytesRead,
-                    m_pBuf[0],
-                    m_pBuf[1],
-                    m_pBuf[2],
-                    m_pBuf[3]
-                );
+                block_Rewind(atsc3_alp_packet_to_process->alp_payload);
+                uint16_t packet_size = 0;
+                uint16_t alp_packet_size = 0;
+                uint8_t* ptr = nullptr;
+
+                if (atsc3_alp_packet_to_process->alp_packet_header.packet_type == 0x00) {
+                    packet_size = block_Remaining_size(atsc3_alp_packet_to_process->alp_payload);
+                    alp_packet_size = 2 + packet_size;
+                    ptr = block_Get(bbp_block);
+
+                    ptr[0] = 0x00 | ((packet_size >> 8) & 0x7);
+                    ptr[1] = packet_size & 0xFF;
+                    bbp_block->i_pos += 2;
+
+                    block_Write(bbp_block, block_Get(atsc3_alp_packet_to_process->alp_payload), packet_size);
+                } else if (atsc3_alp_packet_to_process->alp_packet_header.packet_type == 0x04) {
+                    //LMT packet
+                    block_Rewind(atsc3_alp_packet_to_process->alp_packet_header.alp_header_payload);
+                    packet_size = block_Remaining_size(atsc3_alp_packet_to_process->alp_payload);
+                    uint16_t alp_header_size =  block_Remaining_size(atsc3_alp_packet_to_process->alp_packet_header.alp_header_payload);
+                    alp_packet_size = alp_header_size + packet_size;
+
+                    printf("LMT: packet_num: %d, PLP: %d, with alp_packet_header: %p, header: 0x%02x 0x%02x, alp_packet_header size: %d, and ALP packet size is: %d",
+                        num_packets_written,
+                        atsc3_alp_packet_to_process->plp_num,
+                        block_Get(atsc3_alp_packet_to_process->alp_packet_header.alp_header_payload),
+                        atsc3_alp_packet_to_process->alp_packet_header.alp_header_payload->p_buffer[0],
+                        atsc3_alp_packet_to_process->alp_packet_header.alp_header_payload->p_buffer[1],
+                        alp_header_size,
+                        packet_size);
+
+                    block_Write(bbp_block, block_Get(atsc3_alp_packet_to_process->alp_packet_header.alp_header_payload), alp_header_size);
+                    block_Write(bbp_block, block_Get(atsc3_alp_packet_to_process->alp_payload), packet_size);
+                }
+
+                int bbp_block_len = bbp_block->i_pos; // +(4 - bbp_block->i_pos % 4);
+                int free = 0;
+                block_Rewind(bbp_block);
+                ptr = block_Get(bbp_block);
+
+                if (true || total_alp_packet_count % 500 == 0) {
+                    printf("WriteMplpPacket: packet_num: %d, PLP: %d, with m_pBuf: %p, and bbp_block_len packet size is: %d, ALP header is: 0x%02x 0x%02x 0x%02x 0x%02x, bootsrap_timing_ref seconds: 0x%06x, a_milli: 0x%04x \n",
+                        num_packets_written,
+                        atsc3_alp_packet_to_process->plp_num,
+                        ptr,
+                        bbp_block_len,
+                        ptr[0],
+                        ptr[1],
+                        ptr[2],
+                        ptr[3],
+                        atsc3_alp_packet_to_process->bootstrap_timing_data_timestamp_short_reference.seconds_pre,
+                        atsc3_alp_packet_to_process->bootstrap_timing_data_timestamp_short_reference.a_milliseconds_pre);
+                }
+
+             
+                m_DtOutp.GetMplpFifoFree(currentPLP, free);
+                if (free < bbp_block_len) {
+                    printf("WARNING: FIFO free size less than 1500! m_DtOutp.WriteMplp: currentPLP: %d, block size: %d, fifo free: %d, to_dispatch_queue size: %d\n\n",
+                        currentPLP, bbp_block_len, free, to_dispatch_queue.size()
+                    );
+                }
+                else   if (total_alp_packet_count % 500 == 0) {
+                    printf("\n\n\Before: m_DtOutp.WriteMplp: currentPLP: %d, block size: %d, fifo free: %d, to_dispatch_queue size: %d\n\n",
+                        currentPLP, bbp_block_len, free, to_dispatch_queue.size()
+                    );
+                }
+                dr = m_DtOutp.WriteMplpPacket(currentPLP, (char*)bbp_block->p_buffer, bbp_block_len, DtFractionInt(1, 5000));
+                //dr = m_DtOutp.WriteMplp(currentPLP, (char*)bbp_block->p_buffer, block_len);
+           
+                total_alp_packet_count++;
+
+                if (dr != DTAPI_OK) {
+                    throw Exc(c_ErrFailWrite, ::DtapiResult2Str(dr));
+                }
             }
-            dr = m_DtOutp.WriteMplpPacket(0, m_pBuf, NumBytesRead);
+            to_purge_queue.push(atsc3_alp_packet_to_process);
+            to_dispatch_queue.pop();
+        }
 
-            if ( dr != DTAPI_OK )
-                throw Exc(c_ErrFailWrite, ::DtapiResult2Str(dr));
+        while (to_purge_queue.size()) {
+            atsc3_alp_packet_t* atsc3_alp_packet_to_to_purge = to_purge_queue.front();
+            to_purge_queue.pop();
+            atsc3_alp_packet_free(&atsc3_alp_packet_to_to_purge);
         }
         
         if (TxStarted)
@@ -2106,7 +1895,7 @@ void Player::LoopFile()
         // We wait with starting actual transmission until we have build up a minimum FIFO
         // load. If we reach the end-of-file and only one loop left to go start immediately.
         dr = m_DtOutp.GetFifoLoad(FifoLoad);
-        if ( !TxStarted && ( (EoF && LoopCnt==1) || FifoLoad>=MinFifoLoad ) )
+        if ( !TxStarted && FifoLoad>=MinFifoLoad)
         {
             // Start transmission
             dr = m_DtOutp.SetTxControl(DTAPI_TXCTRL_SEND);
@@ -2114,41 +1903,6 @@ void Player::LoopFile()
                 throw Exc(c_ErrFailSetTxControl, ::DtapiResult2Str(dr));
 
             TxStarted = true;
-        }
-
-        // If we have reached the end-of-file check is the last data has been transmitted
-        if ( EoF && TxStarted && FifoLoad<m_ExitLoad && LoopCnt==1 )
-            break;  // Reached end-of-file, last loop and transmitted all data
-        else if ( EoF && (LoopCnt>1 || LoopCnt==0) )
-        {
-            // We reached the end-of-file, but this is not the last loop
-
-            // Loop infinitely?
-            if ( LoopCnt!=0 )
-                LoopCnt--;
-
-            // Reset file position and end-of-file flag
-            ::fseek(m_pFile, 0, SEEK_SET);
-            EoF = false;
-
-            // Skip DTSDI file header
-            if ( m_CmdLineParams.m_PlayDtSdiFile )
-            {
-                DtSdiFileHdrV2 FileHdr;
-                NumBytesRead = (int)fread(&FileHdr, 1, m_SizeOfDtSdiHdr, m_pFile);
-                // Sanity check
-                if ( NumBytesRead != m_SizeOfDtSdiHdr )
-                    throw Exc(c_ErrInvalidFileSize);
-            }
-            // Skip PCAP file header
-            else if ( m_CmdLineParams.m_PlayPcapFile )
-            {
-                PcapFileHeader  FileHdr;
-                NumBytesRead = (int)fread(&FileHdr, 1, sizeof(PcapFileHeader), m_pFile);
-                // Sanity check
-                if ( NumBytesRead != sizeof(PcapFileHeader) )
-                    throw Exc(c_ErrInvalidFileSize);
-            }
         }
     }
 }
@@ -2181,44 +1935,38 @@ int Player::Play(int argc, char* argv[])
         catch ( ... ) {
             return -1;
         }
-        if ( m_CmdLineParams.m_ShowHelp )
-        {
-            // Disable silent mo de
-            m_CmdLineParams.m_SilentMode = false;
-            ShowHelp();
-            return RetValue;
-        }
-
+      
         //-.-.-.-.-.-.-.-.-.-.-.-.-.-.- Print start message -.-.-.-.-.-.-.-.-.-.-.-.-.-.-.
-
-        LogF("DtPlay player V%d.%d.%d (c) 2000-2019 DekTec Digital Video B.V.\n",
-              DTPLAY_VERSION_MAJOR, DTPLAY_VERSION_MINOR, DTPLAY_VERSION_BUGFIX);
-
-        LogF("DTAPI compile version: V%d.%d.%d.%d\n",
-              DTAPI_VERSION_MAJOR, DTAPI_VERSION_MINOR, DTAPI_VERSION_BUGFIX, DTAPI_VERSION_BUILD);
-
         int  Maj=-1,Min=-1,BugFix=-1,Build=-1;
         DtapiGetVersion(Maj,Min,BugFix,Build);
         LogF("DTAPI link version: V%d.%d.%d.%d\n",
               Maj, Min, BugFix, Build);
 
 
-        //.-.-.-.-.-.-.-.-.-.-.-.-.-.-.- Open the play file -.-.-.-.-.-.-.-.-.-.-.-.-.-.-.
+        //.-.-.-.-.-.-.-.-.-.-.-.-.-.-.- Open the SRT+STLTP emission
+        
+        const char* SRT_HOST_CONNECTION_STRING = "srt://bna.srt.atsc3.com:31348?passphrase=88731837-0EB5-4951-83AA-F515B3BEBC20";
 
-        // Try to open a file for reading
-#ifdef WINBUILD
-        m_pFile = _wfopen( m_CmdLineParams.m_FileName.c_str(), L"rb");
-#else
-        string  StrFilename(m_CmdLineParams.m_FileName.begin(), m_CmdLineParams.m_FileName.end());
-        m_pFile = fopen(StrFilename.c_str(), "rb");
-#endif
-        if (m_pFile == NULL) {
-            printf("file is null, starting modulator with no ALP data payload\n");
-            //throw Exc(c_ErrFailToOpenFile, m_CmdLineParams.m_FileName.c_str());
-        } else {
-            if (m_CmdLineParams.m_PlayPcapFile)
-                DetectPcapFormat();
-        }
+        SRTRxSTLTPVirtualPHY* srtRxSTLTPVirtualPHY = new SRTRxSTLTPVirtualPHY(SRT_HOST_CONNECTION_STRING);
+        atsc3_stltp_depacketizer_context_t* atsc3_stltp_depacketizer_context = srtRxSTLTPVirtualPHY->get_atsc3_stltp_depacketizer_context();
+
+        atsc3_stltp_depacketizer_context->atsc3_stltp_timing_management_packet_collection_callback_with_context = atsc3_stltp_timing_management_collection_callback;
+        atsc3_stltp_depacketizer_context->atsc3_stltp_timing_management_packet_collection_callback_context = (void*)this;
+
+        atsc3_stltp_depacketizer_context->atsc3_stltp_preamble_packet_collection_callback_with_context = atsc3_stltp_preamble_packet_collection_callback;
+        atsc3_stltp_depacketizer_context->atsc3_stltp_preamble_packet_collection_callback_context = (void*)this;
+
+        atsc3_stltp_depacketizer_context->atsc3_stltp_baseband_alp_packet_collection_callback_with_context = atsc3_stltp_baseband_alp_packet_collection_callback;
+        atsc3_stltp_depacketizer_context->atsc3_stltp_baseband_alp_packet_collection_callback_context = (void*)this;
+        
+        srtRxSTLTPVirtualPHY->run();
+
+        double srt_thread_run_start_time = gt();
+
+        //srtRxSTLTPVirtualPHY->stop();
+
+        //delete srtRxSTLTPVirtualPHY;
+
       
         //-.-.-.-.-.-.-.-.-.-.-.-.- Attach to the output channel -.-.-.-.-.-.-.-.-.-.-.-.-
         AttachToOutput();
@@ -2235,14 +1983,24 @@ int Player::Play(int argc, char* argv[])
 
         // Print start info
         DisplayPlayInfo();
-        // Loop file
-        if (m_pFile != NULL) {
-            printf("Replaying file, m_pFile is: %p\n", m_pFile);
-            LoopFile();
-        } else {
-            printf("sleeping for 60s");
-            Sleep(60 * 1000);
 
+        processPreambleSettingsThreadShouldRun = true;
+        processPreambleSettingsThread = std::thread([this]() {
+            processPreambleSettingsThreadShutdown = false;
+            processPreambleSettings();
+            processPreambleSettingsThreadShutdown = true;
+        });
+
+        processDemuxedALPQueueThreadShouldRun = true;
+        processDemuxedALPQueueThread = std::thread([this]() {
+            processDemuxedALPQueueThreadShutdown = false;
+            processDemuxedALPQueue();
+            processDemuxedALPQueueThreadShutdown = true;
+       });
+
+      //spin
+        while (true) {
+            usleep(100000);
         }
     }
     catch( Exc e )

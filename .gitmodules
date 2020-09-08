@@ -1,0 +1,3 @@
+[submodule "libatsc3"]
+	path = libatsc3
+	url = https://github.com/jjustman/libatsc3.git
