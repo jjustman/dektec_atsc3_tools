@@ -125,6 +125,7 @@
       <PreprocessorDefinitions>WINBUILD;WIN64;_DEBUG;_CONSOLE;%(PreprocessorDefinitions);_CRT_SECURE_NO_WARNINGS</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>.\Import;$(DtapiIncludePath);C:\Program Files (x86)\DekTec\SDKs\WinSDK\DTAPI\Include;$(IncludePath);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>

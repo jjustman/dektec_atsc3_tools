@@ -113,7 +113,7 @@ void Player::atsc3StltpBasebandAlpPacketCollectionCallback(atsc3_alp_packet_coll
         atsc3_alp_packet_collection_queue.push(atsc3_alp_packet_clone(atsc3_alp_packet));
     }
 
-    if (atsc3_alp_packet_collection_queue.size() > 1024) {
+    if (atsc3_alp_packet_collection_queue.size() > 64) {
         atsc3_alp_packet_collection_queue_condition.notify_one();
     }
 }
@@ -1383,7 +1383,7 @@ void Player::InitOutput()
                 DTAPI_ATSC3_QAM1024 1024-QAM
                 DTAPI_ATSC3_QAM4096 4096-QAM */
             m_atsc3PlpPars.m_Modulation = (i == 0) ? DTAPI_ATSC3_QAM16 : DTAPI_ATSC3_QAM256;
-            m_atsc3PlpPars.m_CodeRate = (i == 0) ? DTAPI_ATSC3_COD_9_15 : DTAPI_ATSC3_COD_11_15;
+            m_atsc3PlpPars.m_CodeRate = (i == 0) ? DTAPI_ATSC3_COD_11_15 : DTAPI_ATSC3_COD_11_15; //DTAPI_ATSC3_COD_9_15
 
             /*
             DTAPI_ATSC3_LDPC_16K 16K LDPC
@@ -1633,7 +1633,6 @@ void Player::processDemuxedALPQueue()
     queue<atsc3_alp_packet_t*> to_purge_queue; //perform a shallow copy so we can exit critical section asap
 
     int total_alp_packet_count = 0;
-    int last_plp = -1;
     block_t* bbp_block = block_Alloc(64000);
 
     bool EoF(false), TxStarted(false);
@@ -1642,7 +1641,7 @@ void Player::processDemuxedALPQueue()
     int MinFifoLoad;
 
     uint32_t num_packets_written = 0;
-
+    //m_DtOutp.SetFifoSize(16384000);
     // Init channel to hold mode
     dr = m_DtOutp.SetTxControl(DTAPI_TXCTRL_HOLD);
     if ( dr != DTAPI_OK )
@@ -1779,50 +1778,62 @@ void Player::processDemuxedALPQueue()
 
         /*        jjustman-2020-09-02 - TODO: chunk this up into bootstrap_ref emission time and PLP*/
 
+        //                if (last_plp != -1) { // && last_plp != atsc3_alp_packet_to_process->plp_num) {
 
         //printf("PcapSTLTPVirtualPHY::PcapConsumerThreadRun - pushing %d packets", to_dispatch_queue.size());
         while (to_dispatch_queue.size()) {
             atsc3_alp_packet_t* atsc3_alp_packet_to_process = to_dispatch_queue.front();
+            block_Rewind(bbp_block);
+            int currentPLP = atsc3_alp_packet_to_process->plp_num;
 
-            if (atsc3_alp_packet_to_process->alp_packet_header.packet_type == 0x00) {
-
-                if (last_plp != -1) { // && last_plp != atsc3_alp_packet_to_process->plp_num) {
-                    if (bbp_block->i_pos) {
-                        //int block_size = ((bbp_block->i_pos / 4) * 4)+4;
-                        int block_len = bbp_block->i_pos; // +(4 - bbp_block->i_pos % 4);
-                        if (total_alp_packet_count % 100 == 0) {
-                            int free = 0;
-                            m_DtOutp.GetMplpFifoFree(last_plp, free);
-                            printf("\n\n\Before: m_DtOutp.WriteMplp: last_plp: %d, block size: %d, fifo free: %d\n\n", last_plp, block_len, free);
-                        }
-                        dr = m_DtOutp.WriteMplpPacket(last_plp, (char*)bbp_block->p_buffer, block_len, DtFractionInt(1, 5000));
-                        //dr = m_DtOutp.WriteMplp(last_plp, (char*)bbp_block->p_buffer, block_len);
-
-                        total_alp_packet_count++;
-                        block_Rewind(bbp_block);
-
-                        if (dr != DTAPI_OK)
-                            throw Exc(c_ErrFailWrite, ::DtapiResult2Str(dr));
-                    }
-                }
+            if (atsc3_alp_packet_to_process->alp_packet_header.packet_type == 0x00 || atsc3_alp_packet_to_process->alp_packet_header.packet_type == 0x04) {
 
                 block_Rewind(atsc3_alp_packet_to_process->alp_payload);
-                uint16_t packet_size = block_Remaining_size(atsc3_alp_packet_to_process->alp_payload);
-                uint16_t alp_packet_size = 2 + packet_size;
-                uint8_t* ptr = block_Get(bbp_block);
+                uint16_t packet_size = 0;
+                uint16_t alp_packet_size = 0;
+                uint8_t* ptr = nullptr;
 
-                ptr[0] = 0x00 | ((packet_size >> 8) & 0x7);
-                ptr[1] = packet_size & 0xFF;
-                bbp_block->i_pos += 2;
+                if (atsc3_alp_packet_to_process->alp_packet_header.packet_type == 0x00) {
+                    packet_size = block_Remaining_size(atsc3_alp_packet_to_process->alp_payload);
+                    alp_packet_size = 2 + packet_size;
+                    ptr = block_Get(bbp_block);
 
-                block_Write(bbp_block, block_Get(atsc3_alp_packet_to_process->alp_payload), packet_size);
+                    ptr[0] = 0x00 | ((packet_size >> 8) & 0x7);
+                    ptr[1] = packet_size & 0xFF;
+                    bbp_block->i_pos += 2;
 
-                if (total_alp_packet_count % 500 == 0) {
-                    printf("WriteMplpPacket: packet_num: %d, PLP: %d, with m_pBuf: %p, and ALP packet size is: %d, ALP header is: 0x%02x 0x%02x 0x%02x 0x%02x, bootsrap_timing_ref seconds: 0x%06x, a_milli: 0x%04x \n",
+                    block_Write(bbp_block, block_Get(atsc3_alp_packet_to_process->alp_payload), packet_size);
+                } else if (atsc3_alp_packet_to_process->alp_packet_header.packet_type == 0x04) {
+                    //LMT packet
+                    block_Rewind(atsc3_alp_packet_to_process->alp_packet_header.alp_header_payload);
+                    packet_size = block_Remaining_size(atsc3_alp_packet_to_process->alp_payload);
+                    uint16_t alp_header_size =  block_Remaining_size(atsc3_alp_packet_to_process->alp_packet_header.alp_header_payload);
+                    alp_packet_size = alp_header_size + packet_size;
+
+                    printf("LMT: packet_num: %d, PLP: %d, with alp_packet_header: %p, header: 0x%02x 0x%02x, alp_packet_header size: %d, and ALP packet size is: %d",
+                        num_packets_written,
+                        atsc3_alp_packet_to_process->plp_num,
+                        block_Get(atsc3_alp_packet_to_process->alp_packet_header.alp_header_payload),
+                        atsc3_alp_packet_to_process->alp_packet_header.alp_header_payload->p_buffer[0],
+                        atsc3_alp_packet_to_process->alp_packet_header.alp_header_payload->p_buffer[1],
+                        alp_header_size,
+                        packet_size);
+
+                    block_Write(bbp_block, block_Get(atsc3_alp_packet_to_process->alp_packet_header.alp_header_payload), alp_header_size);
+                    block_Write(bbp_block, block_Get(atsc3_alp_packet_to_process->alp_payload), packet_size);
+                }
+
+                int bbp_block_len = bbp_block->i_pos; // +(4 - bbp_block->i_pos % 4);
+                int free = 0;
+                block_Rewind(bbp_block);
+                ptr = block_Get(bbp_block);
+
+                if (true || total_alp_packet_count % 500 == 0) {
+                    printf("WriteMplpPacket: packet_num: %d, PLP: %d, with m_pBuf: %p, and bbp_block_len packet size is: %d, ALP header is: 0x%02x 0x%02x 0x%02x 0x%02x, bootsrap_timing_ref seconds: 0x%06x, a_milli: 0x%04x \n",
                         num_packets_written,
                         atsc3_alp_packet_to_process->plp_num,
                         ptr,
-                        alp_packet_size,
+                        bbp_block_len,
                         ptr[0],
                         ptr[1],
                         ptr[2],
@@ -1830,7 +1841,27 @@ void Player::processDemuxedALPQueue()
                         atsc3_alp_packet_to_process->bootstrap_timing_data_timestamp_short_reference.seconds_pre,
                         atsc3_alp_packet_to_process->bootstrap_timing_data_timestamp_short_reference.a_milliseconds_pre);
                 }
-                last_plp = atsc3_alp_packet_to_process->plp_num;
+
+             
+                m_DtOutp.GetMplpFifoFree(currentPLP, free);
+                if (free < bbp_block_len) {
+                    printf("WARNING: FIFO free size less than 1500! m_DtOutp.WriteMplp: currentPLP: %d, block size: %d, fifo free: %d, to_dispatch_queue size: %d\n\n",
+                        currentPLP, bbp_block_len, free, to_dispatch_queue.size()
+                    );
+                }
+                else   if (total_alp_packet_count % 500 == 0) {
+                    printf("\n\n\Before: m_DtOutp.WriteMplp: currentPLP: %d, block size: %d, fifo free: %d, to_dispatch_queue size: %d\n\n",
+                        currentPLP, bbp_block_len, free, to_dispatch_queue.size()
+                    );
+                }
+                dr = m_DtOutp.WriteMplpPacket(currentPLP, (char*)bbp_block->p_buffer, bbp_block_len, DtFractionInt(1, 5000));
+                //dr = m_DtOutp.WriteMplp(currentPLP, (char*)bbp_block->p_buffer, block_len);
+           
+                total_alp_packet_count++;
+
+                if (dr != DTAPI_OK) {
+                    throw Exc(c_ErrFailWrite, ::DtapiResult2Str(dr));
+                }
             }
             to_purge_queue.push(atsc3_alp_packet_to_process);
             to_dispatch_queue.pop();
